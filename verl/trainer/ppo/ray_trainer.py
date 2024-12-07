@@ -68,7 +68,7 @@ class ResourcePoolManager:
 
     def get_resource_pool(self, role: Role) -> RayResourcePool:
         """Get the resource pool of the worker_cls"""
-        return self.resource_pool_dict[self.mapping[role]]
+        return self.resource_pool_dict[self.mapping[role]] # dwn: map role to resource pool
 
 
 import torch
@@ -222,6 +222,7 @@ class RayPPOTrainer(object):
 
         # define KL control
         if self.use_reference_policy:
+            # dwn: whether to fix kl coefficient
             if config.algorithm.kl_ctrl.type == 'fixed':
                 self.kl_ctrl = core_algos.FixedKLController(kl_coef=config.algorithm.kl_ctrl.kl_coef)
             elif config.algorithm.kl_ctrl.type == 'adaptive':
@@ -332,6 +333,7 @@ class RayPPOTrainer(object):
         """Init resource pool and worker group"""
         self.resource_pool_manager.create_resource_pool()
 
+        # dwn: for each resource pool, map role to its ray class
         self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
 
         # create actor and rollout
@@ -373,6 +375,7 @@ class RayPPOTrainer(object):
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
         # you should not use `create_colocated_worker_cls`. Instead, directly pass different resource pool to different worker groups.
         # See https://github.com/volcengine/verl/blob/master/examples/ray/tutorial.ipynb for more information.
+        # dwn: for each resource pool, map role to its worker group
         all_wg = {}
         for resource_pool, class_dict in self.resource_pool_to_cls.items():
             worker_dict_cls = create_colocated_worker_cls(class_dict=class_dict)
@@ -430,6 +433,22 @@ class RayPPOTrainer(object):
 
                 # generate a batch
                 with Timer(name='gen', logger=None) as timer:
+                    # dwn:
+                    # prompt -> prompt + response
+
+                    # in: [input_ids, attention_mask, position_ids] -> out: [prompts, responses, input_ids, attention_mask, position_ids, old_log_probs, ...]
+
+                    # out.prompts = in.input_ids
+                    # out.responses = rollout's output token ids (not including input token ids)
+                    # out.input_ids = in.input_ids + out.responses
+                    # out.attention_mask = attention mask of out.input_ids
+                    # out.position_ids = position ids of out.input_ids
+                    # out.old_log_probs = log prob of out.responses
+
+                    # subsequently ref and critic need to compute per-token log prob corresponding to the response
+                    # now that input_ids has become prompt + response
+                    # to make that happen, we should use the forward method to obtain per-token log prob
+                    # in fact, the calculation of old_log_prob is also done via this method
                     gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
                 metrics['timing/gen'] = timer.last
 
@@ -438,12 +457,14 @@ class RayPPOTrainer(object):
                 if self.use_reference_policy:
                     # compute reference log_prob
                     with Timer(name='ref', logger=None) as timer:
+                        # dwn: "ref_log_prob"
                         ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                         batch = batch.union(ref_log_prob)
                     metrics['timing/ref'] = timer.last
 
                 # compute values
                 with Timer(name='values', logger=None) as timer:
+                    # dwn: "values", used for gae and clipping vpreds
                     values = self.critic_wg.compute_values(batch)
                     batch = batch.union(values)
                 metrics['timing/values'] = timer.last
@@ -462,12 +483,18 @@ class RayPPOTrainer(object):
                     batch.batch['token_level_scores'] = reward_tensor
 
                     # compute rewards. apply_kl_penalty if available
+                    # dwn: 
+                    # use ref_log_prob and old_log_prob to calculate kl penalty, and apply to rewards
+                    # critic/kl records the average of kl penalty
                     batch, kl_metrics = apply_kl_penalty(batch,
                                                          kl_ctrl=self.kl_ctrl,
                                                          kl_penalty=self.config.algorithm.kl_penalty)
                     metrics.update(kl_metrics)
 
                     # compute advantages, executed on the driver process
+                    # dwn: 
+                    # use rewards and values to calculate gae
+                    # returns = advantages + values
                     batch = compute_advantage(batch,
                                               self.config.algorithm.gamma,
                                               self.config.algorithm.lam,
@@ -477,15 +504,27 @@ class RayPPOTrainer(object):
                 # update critic
                 if self.use_critic:
                     with Timer(name='update_critic', logger=None) as timer:
+                        # dwn:
+                        # critic loss = 0.5 * (values - returns) ** 2 = 0.5 * advantages ** 2
+                        # in practic we calculate critic as follows:
+                        # we use micro-batches to update the critic, during update, we use critic to calculate vpreds (the values produced by the partially updated critic)
+                        # because the critic has changed, we expect vpreds to differ from values
+                        # we use vpreds to calculate critic loss bacause values might to be too outdated
+                        # to prevent critic from varying too much, we clip vpreds to be close to values
+                        # critic loss = 0.5 * max( (vpreds - returns) ** 2, (vpredsclipped - returns) ** 2 )
                         critic_output = self.critic_wg.update_critic(batch)
                     metrics['timing/update_critic'] = timer.last
                     critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
                     metrics.update(critic_output_metrics)
 
                 # implement critic warmup
+                # dwn: don't update actor during warmup stage, because critic needs more updates
                 if self.config.trainer.critic_warmup <= global_steps:
                     # update actor
                     with Timer(name='update_actor', logger=None) as timer:
+                        # dwn:
+                        # we use micro-batches to update the actor, during update, we use actor to calculate log_probs (the log_probs produced by the partially updated actor)
+                        # then we use importance sampling to calculate clipped objective
                         actor_output = self.actor_rollout_wg.update_actor(batch)
                     metrics['timing/update_actor'] = timer.last
                     actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])

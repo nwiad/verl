@@ -45,11 +45,13 @@ class DataParallelPPOActor(BasePPOActor):
     def _forward_micro_batch(self, micro_batch, temperature):
         response_length = micro_batch['responses'].size(-1)
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            # dwn: forward pass instead of sequence generation
             output = self.actor_module(input_ids=micro_batch['input_ids'],
                                        attention_mask=micro_batch['attention_mask'],
                                        position_ids=micro_batch['position_ids'],
                                        use_cache=False)  # prevent model thinks we are generating
             logits = output.logits / temperature
+            # dwn: we only need the logits of the part corresponding to the response
             logits = logits[:, -response_length - 1:-1]
             log_probs = logprobs_from_logits(logits, micro_batch['responses'])
             return logits, log_probs

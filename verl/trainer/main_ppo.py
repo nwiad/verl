@@ -134,12 +134,17 @@ def main_task(config):
 
     from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
 
+    # dwn: map role to worker class
     role_worker_mapping = {
         Role.ActorRollout: ActorRolloutRefWorker,
         Role.Critic: CriticWorker,
         Role.RefPolicy: ActorRolloutRefWorker
     }
 
+    # dwn:
+    # use global pool as resource pool
+    # specify the layout of global pool
+    # map role to global pool, this mapping will later be used to map role to resource pool
     global_pool_id = 'global_pool'
     resource_pool_spec = {
         global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
@@ -171,6 +176,9 @@ def main_task(config):
     # Note that we always use function-based RM for validation
     val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
 
+    # dwn:
+    # create resource pool
+    # map role to resource pool
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
     trainer = RayPPOTrainer(config=config,

@@ -123,8 +123,10 @@ class RLHFDataset(Dataset):
 
         chat = row_dict.pop(self.prompt_key)
 
+        # dwn: add chat tamplate to prompt, but it's not yet tokenized
         prompt_with_chat_template = self.tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
 
+        # dwn: tokenization, left padding, right truncation
         input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
                                                                          tokenizer=self.tokenizer,
                                                                          max_length=self.max_prompt_length,
