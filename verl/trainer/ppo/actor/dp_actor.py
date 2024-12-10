@@ -111,7 +111,7 @@ class DataParallelPPOActor(BasePPOActor):
         log_probs = torch.concat(log_probs_lst, dim=0)
         return log_probs
 
-    def update_policy(self, data: DataProto):
+    def update_policy(self, data: DataProto, group_size: int = 1):
         # make sure we are in training mode
         self.actor_module.train()
 
@@ -150,6 +150,16 @@ class DataParallelPPOActor(BasePPOActor):
 
                 entropy_loss = core_algos.compute_entropy_loss(logits, response_mask)
                 policy_loss = pg_loss - entropy_loss * entropy_coeff
+
+                grpo_kl_coeff = self.config.get('grpo_kl_coeff', 0.0) # dwn: if we don't apply grpo, coeffient is 0
+                assert grpo_kl_coeff >= 0.0, f'grpo_kl_coeff must be non-negative. Got {grpo_kl_coeff}'
+                if grpo_kl_coeff > 0:
+                    ref_log_prob = data['ref_log_prob']
+                    grpo_kl_loss = core_algos.compute_grpo_kl_loss(log_prob=log_prob,
+                                                                   ref_log_prob=ref_log_prob,
+                                                                   eos_mask=response_mask)
+                    policy_loss += grpo_kl_coeff * grpo_kl_loss
+                    policy_loss /= group_size
 
                 loss = policy_loss / self.gradient_accumulation
                 loss.backward()

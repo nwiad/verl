@@ -55,6 +55,40 @@ def collate_fn(data_list: list[dict]) -> dict:
     return output
 
 
+def get_grpo_collate_fn(group_size):
+    def grpo_collate_fn(data_list: list[dict]) -> dict:
+        # dwn: repeat each data for group_size times for GRPO sampling
+        grouped_data_list = []
+        for data in data_list:
+            grouped_data_list.extend([data] * group_size)
+
+        tensors = {}
+        non_tensors = {}
+
+        for data in grouped_data_list:
+            for key, val in data.items():
+                if isinstance(val, torch.Tensor):
+                    if key not in tensors:
+                        tensors[key] = []
+                    tensors[key].append(val)
+                else:
+                    if key not in non_tensors:
+                        non_tensors[key] = []
+                    non_tensors[key].append(val)
+
+        for key, val in tensors.items():
+            tensors[key] = torch.stack(val, dim=0)
+
+        for key, val in non_tensors.items():
+            non_tensors[key] = np.array(val, dtype=object)
+
+        output = {}
+        output.update(tensors)
+        output.update(non_tensors)
+        return output
+    return grpo_collate_fn
+
+
 class RLHFDataset(Dataset):
     """
     We assume the dataset contains a column that contains prompts and other information

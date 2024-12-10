@@ -1,7 +1,7 @@
 set -x
 
 WORK_DIR=/opt/tiger/dwn-verl
-MODEL=/mnt/bn/daiweinan-fuse/models/gemma-2-2b-it
+MODEL=/mnt/bn/daiweinan-fuse/models/Llama-3.1-8B-Instruct
 GPUS_PER_NODE=8
 ACTOR_MICRO_BS=16
 ROLLOUT_MICRO_BS=16
@@ -40,7 +40,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tracking'] \
     trainer.project_name='verl_example' \
-    trainer.experiment_name='gemma-2-2b-it_function_rm' \
+    trainer.experiment_name='llama-3.1-8b-instruct_function_rm' \
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \

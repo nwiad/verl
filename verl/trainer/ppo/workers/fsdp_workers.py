@@ -305,7 +305,7 @@ class ActorRolloutRefWorker(Worker):
         torch.cuda.empty_cache()
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
-    def update_actor(self, data: DataProto):
+    def update_actor(self, data: DataProto, group_size: int = 1):
         data = data.to('cuda')
 
         assert self._is_actor
@@ -320,7 +320,7 @@ class ActorRolloutRefWorker(Worker):
 
         log_gpu_memory_usage('Before update policy', logger=logger)
 
-        metrics = self.actor.update_policy(data=data)
+        metrics = self.actor.update_policy(data=data, group_size=group_size)
 
         self.actor_lr_scheduler.step()
         lr = self.actor_lr_scheduler.get_last_lr()[0]

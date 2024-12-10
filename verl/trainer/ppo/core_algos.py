@@ -105,6 +105,37 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
     return advantages, returns
 
 
+def compute_norm_os_advantage(token_level_scores: torch.Tensor, response_length: int, eos_mask: torch.Tensor, group_size: int):
+    """
+    Args:
+        token_level_scores: `(torch.Tensor)`
+            shape: (bs * gs, response_length)
+        response_length: `(int)`
+        eos_mask: `(torch.Tensor)`
+            shape: (bs * gs, response_length). [EOS] mask. The token after [EOS] have mask zero.
+        group_size: `(int)`
+
+    Returns:
+        advantages: `(torch.Tensor)`
+            shape: (bs * gs, response_length)
+
+    """
+    # score is only assigned to the last token of each response
+    assert response_length == token_level_scores.shape[-1]
+    outcome_score_group = token_level_scores[:, -1].reshape(-1, group_size) # dwn: (bs, gs)
+    with torch.no_grad():
+        # dwn: compute average along group (dim=0)
+        outcome_scores_avg = torch.mean(outcome_score_group, dim=1, keepdim=True)  # dwn: (bs, 1) will be broadcasted to (bs, gs)
+        # dwn: compute standard deviation along group (dim=0)
+        outcome_scores_std = torch.std(outcome_score_group, dim=1, keepdim=True)  # dwn: (bs, 1) will be broadcasted to (bs, gs)
+        # dwn: compute normalized scores
+        outcome_scores_norm = (outcome_score_group - outcome_scores_avg) / (outcome_scores_std + 1e-8)  # dwn: (bs, gs,)
+        advantages = outcome_scores_norm.reshape(-1).unsqueeze(-1)  # dwn: (bs * gs, 1), will be broadcasted to (bs * gs, response_length)
+        # dwn: mask the advantages with eos_mask
+        advantages = advantages * eos_mask
+    return advantages  # dwn: (bs * gs, response_length)
+
+
 def compute_rewards(token_level_scores, old_log_prob, ref_log_prob, kl_ratio):
     kl = old_log_prob - ref_log_prob
     return token_level_scores - kl * kl_ratio
@@ -214,3 +245,14 @@ def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_pe
         raise NotImplementedError
 
     raise NotImplementedError
+
+
+def compute_grpo_kl_loss(log_prob, ref_log_prob, eos_mask):
+    """
+    grpo_kl_loss = exp(ref_log_prob - log_prob) - (ref_log_prob - log_prob) - 1
+    """
+    delta = ref_log_prob - log_prob
+    ratio = torch.exp(delta)
+    grpo_kl = ratio - delta - 1 # dwn: guaranteed to be non-negative
+    grpo_kl_loss =  verl_F.masked_mean(grpo_kl, eos_mask)
+    return grpo_kl_loss

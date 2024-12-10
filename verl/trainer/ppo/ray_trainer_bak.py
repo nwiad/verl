@@ -107,15 +107,16 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     return data, metrics
 
 
-def compute_advantage(data: Union[DataProto, list[DataProto]], gamma, lam, adv_estimator, group_size):
+def compute_advantage(data: DataProto, gamma, lam, adv_estimator):
+    values = data.batch['values']
+    responses = data.batch['responses']
+    response_length = responses.size(1)
+    attention_mask = data.batch['attention_mask']
+    response_mask = attention_mask[:, -response_length:]
+    token_level_rewards = data.batch['token_level_rewards']
+
     # TODO: add other ways to estimate advantages
     if adv_estimator == 'gae':
-        values = data.batch['values']
-        responses = data.batch['responses']
-        response_length = responses.size(1)
-        attention_mask = data.batch['attention_mask']
-        response_mask = attention_mask[:, -response_length:]
-        token_level_rewards = data.batch['token_level_rewards'] # dwn: token_level_scores - beta * kld
         advantages, returns = core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
                                                                       values=values,
                                                                       eos_mask=response_mask,
@@ -123,20 +124,6 @@ def compute_advantage(data: Union[DataProto, list[DataProto]], gamma, lam, adv_e
                                                                       lam=lam)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
-    elif adv_estimator == 'norm_os':
-        # dwn: batch size is bs * gs
-        responses = data.batch['responses']
-        response_length = responses.size(1)
-        attention_mask = data.batch['attention_mask']
-        response_mask = attention_mask[:, -response_length:] # dwn: bs * gs, response_length)
-        token_level_scores = data.batch['token_level_scores'] # dwn: (bs * gs, response_length), do not apply kl penalty
-        advantages = core_algos.compute_norm_os_advantage(token_level_scores=token_level_scores,
-                                                          response_length=response_length,
-                                                          eos_mask=response_mask,
-                                                          group_size=group_size)
-        data['advantages'] = advantages # dwn: (bs * gs, response_length)
-    elif adv_estimator == 'norm_ps':
-        raise NotImplementedError
     else:
         raise NotImplementedError
     return data
@@ -248,28 +235,12 @@ class RayPPOTrainer(object):
         else:
             self.kl_ctrl = core_algos.FixedKLController(kl_coef=0.)
 
-        # dwn: check consistency for GRPO
-        self.use_grpo = self.config.algorithm.get('use_grpo', False)
-        self.group_size = self.config.algorithm.get('group_size', 1)
-        print(f'Use GRPO: {self.use_grpo}')
-        if self.use_grpo:
-            print(f'GRPO Group size: {self.group_size}')
-            assert self.group_size > 1, f'Using GRPO, bad group size, got {self.group_size}'
-            assert self.config.algorithm.adv_estimator in ['norm_os', 'norm_ps'], f'Using GRPO, bad adv_estimator, got {self.config.algorithm.adv_estimator}'
-            assert self.config.actor_rollout_ref.actor.get('grpo_kl_coeff', 0.0) > 0.0, f'Using GRPO, bad grpo_kl_coeff, got {self.config.actor_rollout_ref.actor.grpo_kl_coeff}'
-            self.config.actor_rollout_ref.actor.ppo_mini_batch_size *= self.group_size
-            self.config.actor_rollout_ref.actor.ppo_micro_batch_size *= self.group_size
-        else:
-            assert self.group_size == 1, f'Not using GRPO, bad group size, got {self.group_size}'
-            assert self.config.algorithm.adv_estimator == 'gae', f'Not using GRPO, bad adv_estimator, got {self.config.algorithm.adv_estimator}'
-            assert self.config.actor_rollout_ref.actor.get('grpo_kl_coeff', 0.0) == 0.0, f'Not using GRPO, bad grpo_kl_coeff, got {self.config.actor_rollout_ref.actor.get("grpo_kl_coeff", 0.0)}'
+        self._create_dataloader()
 
-        self._create_dataloader(use_grpo=self.use_grpo, group_size=self.group_size)
-
-    def _create_dataloader(self, use_grpo=False, group_size=1):
+    def _create_dataloader(self):
         from torch.utils.data import DataLoader
         # TODO: we have to make sure the batch size is divisible by the dp size
-        from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn, get_grpo_collate_fn
+        from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
         self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
                                          tokenizer=self.tokenizer,
                                          prompt_key=self.config.data.prompt_key,
@@ -281,7 +252,7 @@ class RayPPOTrainer(object):
                                            batch_size=self.config.data.train_batch_size,
                                            shuffle=True,
                                            drop_last=True,
-                                           collate_fn=get_grpo_collate_fn(group_size=group_size) if use_grpo else collate_fn) # dwn: during training, we modify collate_fn for GRPO
+                                           collate_fn=collate_fn)
 
         self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,
@@ -381,15 +352,8 @@ class RayPPOTrainer(object):
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
             self.use_critic = True
-        elif self.config.algorithm.adv_estimator == 'norm_os':
-            # dwn: support GRPO (outcome-supervised)
-            self.use_critic = False
-        elif self.config.algorithm.adv_estimator == 'norm_ps':
-            # dwn: support GRPO (process-supervised)
-            self.use_critic = False
-            raise NotImplementedError
         else:
-            # support ReMax
+            # support GRPO and ReMax
             raise NotImplementedError
 
         # create reference policy if needed
@@ -459,10 +423,6 @@ class RayPPOTrainer(object):
 
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
-                # dwn: check if v.shape[0] of all k,v is equal to self.config.data.batch_size * self.config.algorithm.group_size
-                for k, v in batch_dict.items():
-                    assert v.shape[0] == self.config.data.batch_size * self.config.algorithm.group_size, f'Bad batch_size for {k}, expected {self.config.data.batch_size=} * {self.config.algorithm.group_size=}, got {v.shape[0]}'
-
                 metrics = {}
 
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
@@ -502,14 +462,12 @@ class RayPPOTrainer(object):
                         batch = batch.union(ref_log_prob)
                     metrics['timing/ref'] = timer.last
 
-                # dwn: only compute values when we use critic
-                if self.use_critic:
-                    # compute values
-                    with Timer(name='values', logger=None) as timer:
-                        # dwn: "values", used for gae and clipping vpreds
-                        values = self.critic_wg.compute_values(batch)
-                        batch = batch.union(values)
-                    metrics['timing/values'] = timer.last
+                # compute values
+                with Timer(name='values', logger=None) as timer:
+                    # dwn: "values", used for gae and clipping vpreds
+                    values = self.critic_wg.compute_values(batch)
+                    batch = batch.union(values)
+                metrics['timing/values'] = timer.last
 
                 with Timer(name='adv', logger=None) as timer:
                     # compute scores. Support both model and function-based.
@@ -528,28 +486,19 @@ class RayPPOTrainer(object):
                     # dwn: 
                     # use ref_log_prob and old_log_prob to calculate kl penalty, and apply to rewards
                     # critic/kl records the average of kl penalty
-                    # only apply kl penalty when we use critic
-                    if self.use_critic:
-                        batch, kl_metrics = apply_kl_penalty(batch,
-                                                            kl_ctrl=self.kl_ctrl,
-                                                            kl_penalty=self.config.algorithm.kl_penalty)
-                        metrics.update(kl_metrics)
+                    batch, kl_metrics = apply_kl_penalty(batch,
+                                                         kl_ctrl=self.kl_ctrl,
+                                                         kl_penalty=self.config.algorithm.kl_penalty)
+                    metrics.update(kl_metrics)
 
                     # compute advantages, executed on the driver process
-                    if self.use_grpo:
-                        # dwn:
-                        # if use GRPO, use reward normalization to calculate advantages
-                        batch = compute_advantage(batch,
-                                                  adv_estimator=self.config.algorithm.adv_estimator,
-                                                  group_size=self.group_size)
-                    else:
-                        # dwn: 
-                        # if use PPO, use rewards and values to calculate gae
-                        # returns = advantages + values
-                        batch = compute_advantage(batch,
-                                                  self.config.algorithm.gamma,
-                                                  self.config.algorithm.lam,
-                                                  adv_estimator=self.config.algorithm.adv_estimator)
+                    # dwn: 
+                    # use rewards and values to calculate gae
+                    # returns = advantages + values
+                    batch = compute_advantage(batch,
+                                              self.config.algorithm.gamma,
+                                              self.config.algorithm.lam,
+                                              adv_estimator=self.config.algorithm.adv_estimator)
                 metrics['timing/adv'] = timer.last
 
                 # update critic
@@ -576,7 +525,7 @@ class RayPPOTrainer(object):
                         # dwn:
                         # we use micro-batches to update the actor, during update, we use actor to calculate log_probs (the log_probs produced by the partially updated actor)
                         # then we use importance sampling to calculate clipped objective
-                        actor_output = self.actor_rollout_wg.update_actor(batch, self.group_size)
+                        actor_output = self.actor_rollout_wg.update_actor(batch)
                     metrics['timing/update_actor'] = timer.last
                     actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                     metrics.update(actor_output_metrics)
