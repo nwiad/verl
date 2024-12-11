@@ -122,7 +122,7 @@ def compute_norm_os_advantage(token_level_scores: torch.Tensor, response_length:
     """
     # score is only assigned to the last token of each response
     assert response_length == token_level_scores.shape[-1]
-    outcome_score_group = token_level_scores[:, -1].reshape(-1, group_size) # dwn: (bs, gs)
+    outcome_score_group = token_level_scores.sum(dim=-1).reshape(-1, group_size) # dwn: (bs, gs)
     with torch.no_grad():
         # dwn: compute average along group (dim=0)
         outcome_scores_avg = torch.mean(outcome_score_group, dim=1, keepdim=True)  # dwn: (bs, 1) will be broadcasted to (bs, gs)

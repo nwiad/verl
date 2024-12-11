@@ -107,7 +107,7 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     return data, metrics
 
 
-def compute_advantage(data: Union[DataProto, list[DataProto]], gamma, lam, adv_estimator, group_size):
+def compute_advantage(data: Union[DataProto, list[DataProto]], gamma=1.0, lam=1.0, adv_estimator='gae', group_size=1):
     # TODO: add other ways to estimate advantages
     if adv_estimator == 'gae':
         values = data.batch['values']
@@ -134,7 +134,7 @@ def compute_advantage(data: Union[DataProto, list[DataProto]], gamma, lam, adv_e
                                                           response_length=response_length,
                                                           eos_mask=response_mask,
                                                           group_size=group_size)
-        data['advantages'] = advantages # dwn: (bs * gs, response_length)
+        data.batch['advantages'] = advantages # dwn: (bs * gs, response_length)
     elif adv_estimator == 'norm_ps':
         raise NotImplementedError
     else:
@@ -151,7 +151,6 @@ def reduce_metrics(metrics: dict):
 def compute_data_metrics(batch):
     # TODO: add response length
     sequence_score = batch.batch['token_level_scores'].sum(-1)
-    sequence_reward = batch.batch['token_level_rewards'].sum(-1)
 
     response_length = batch.batch['responses'].shape[-1]
 
@@ -162,30 +161,15 @@ def compute_data_metrics(batch):
     prompt_length = prompt_mask.sum(-1).float()
     response_length = response_mask.sum(-1).float()  # (batch_size,)
 
-    returns = batch.batch['returns']
-    values = batch.batch['values']
-
     metrics = {
         # score
         'critic/score/mean': torch.mean(sequence_score).detach().item(),
         'critic/score/max': torch.max(sequence_score).detach().item(),
         'critic/score/min': torch.min(sequence_score).detach().item(),
-        # reward
-        'critic/rewards/mean': torch.mean(sequence_reward).detach().item(),
-        'critic/rewards/max': torch.max(sequence_reward).detach().item(),
-        'critic/rewards/min': torch.min(sequence_reward).detach().item(),
         # adv
         'critic/advantages/mean': masked_mean(advantages, response_mask).detach().item(),
         'critic/advantages/max': torch.max(advantages[response_mask]).detach().item(),
         'critic/advantages/min': torch.min(advantages[response_mask]).detach().item(),
-        # returns
-        'critic/returns/mean': masked_mean(returns, response_mask).detach().item(),
-        'critic/returns/max': torch.max(returns[response_mask]).detach().item(),
-        'critic/returns/min': torch.min(returns[response_mask]).detach().item(),
-        # values
-        'critic/values/mean': masked_mean(values, response_mask).detach().item(),
-        'critic/values/max': torch.max(values[response_mask]).detach().item(),
-        'critic/values/min': torch.min(values[response_mask]).detach().item(),
         # response length
         'response_length/mean': torch.mean(response_length).detach().item(),
         'response_length/max': torch.max(response_length).detach().item(),
@@ -195,6 +179,32 @@ def compute_data_metrics(batch):
         'prompt_length/max': torch.max(prompt_length).detach().item(),
         'prompt_length/min': torch.min(prompt_length).detach().item(),
     }
+
+    if 'token_level_rewards' in batch.batch.keys():
+        sequence_reward = batch.batch['token_level_rewards'].sum(-1)
+        metrics.update({
+            # reward
+            'critic/rewards/mean': torch.mean(sequence_reward).detach().item(),
+            'critic/rewards/max': torch.max(sequence_reward).detach().item(),
+            'critic/rewards/min': torch.min(sequence_reward).detach().item(),
+        })
+    if 'returns' in batch.batch.keys():
+        returns = batch.batch['returns']
+        metrics.update({
+            # values
+            'critic/values/mean': masked_mean(values, response_mask).detach().item(),
+            'critic/values/max': torch.max(values[response_mask]).detach().item(),
+            'critic/values/min': torch.min(values[response_mask]).detach().item(),
+        })
+    if 'values' in batch.batch.keys():
+        values = batch.batch['values']
+        metrics.update({
+            # returns
+            'critic/returns/mean': masked_mean(returns, response_mask).detach().item(),
+            'critic/returns/max': torch.max(returns[response_mask]).detach().item(),
+            'critic/returns/min': torch.min(returns[response_mask]).detach().item(),
+        })
+
     return metrics
 
 
@@ -250,7 +260,7 @@ class RayPPOTrainer(object):
 
         # dwn: check consistency for GRPO
         self.use_grpo = self.config.algorithm.get('use_grpo', False)
-        self.group_size = self.config.algorithm.get('group_size', 1)
+        self.group_size = self.config.actor_rollout_ref.actor.get('group_size', 1)
         print(f'Use GRPO: {self.use_grpo}')
         if self.use_grpo:
             print(f'GRPO Group size: {self.group_size}')
@@ -258,7 +268,6 @@ class RayPPOTrainer(object):
             assert self.config.algorithm.adv_estimator in ['norm_os', 'norm_ps'], f'Using GRPO, bad adv_estimator, got {self.config.algorithm.adv_estimator}'
             assert self.config.actor_rollout_ref.actor.get('grpo_kl_coeff', 0.0) > 0.0, f'Using GRPO, bad grpo_kl_coeff, got {self.config.actor_rollout_ref.actor.grpo_kl_coeff}'
             self.config.actor_rollout_ref.actor.ppo_mini_batch_size *= self.group_size
-            self.config.actor_rollout_ref.actor.ppo_micro_batch_size *= self.group_size
         else:
             assert self.group_size == 1, f'Not using GRPO, bad group size, got {self.group_size}'
             assert self.config.algorithm.adv_estimator == 'gae', f'Not using GRPO, bad adv_estimator, got {self.config.algorithm.adv_estimator}'
@@ -459,10 +468,10 @@ class RayPPOTrainer(object):
 
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
-                # dwn: check if v.shape[0] of all k,v is equal to self.config.data.batch_size * self.config.algorithm.group_size
+                print(f'[Epoch {epoch}] [Batch {global_steps}]')
+                # dwn: check if v.shape[0] of all k,v is equal to train_batch_size * group_size
                 for k, v in batch_dict.items():
-                    assert v.shape[0] == self.config.data.batch_size * self.config.algorithm.group_size, f'Bad batch_size for {k}, expected {self.config.data.batch_size=} * {self.config.algorithm.group_size=}, got {v.shape[0]}'
-
+                    assert v.shape[0] == self.config.data.train_batch_size * self.group_size, f'Bad batch_size for {k}, expected {self.config.data.batch_size=} * {self.group_size=}, got {v.shape[0]}'
                 metrics = {}
 
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
@@ -472,6 +481,7 @@ class RayPPOTrainer(object):
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
                 # generate a batch
+                print('generation start')
                 with Timer(name='gen', logger=None) as timer:
                     # dwn:
                     # prompt -> prompt + response
@@ -491,26 +501,32 @@ class RayPPOTrainer(object):
                     # in fact, the calculation of old_log_prob is also done via this method
                     gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
                 metrics['timing/gen'] = timer.last
+                print(f'generation end in {metrics["timing/gen"]:.2f} seconds')
 
                 batch = batch.union(gen_batch_output)
 
                 if self.use_reference_policy:
                     # compute reference log_prob
+                    print('compute reference log_prob start')
                     with Timer(name='ref', logger=None) as timer:
                         # dwn: "ref_log_prob"
                         ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                         batch = batch.union(ref_log_prob)
                     metrics['timing/ref'] = timer.last
+                    print(f'compute reference log_prob end in {metrics["timing/ref"]:.2f} seconds')
 
                 # dwn: only compute values when we use critic
                 if self.use_critic:
                     # compute values
+                    print('compute values start')
                     with Timer(name='values', logger=None) as timer:
                         # dwn: "values", used for gae and clipping vpreds
                         values = self.critic_wg.compute_values(batch)
                         batch = batch.union(values)
                     metrics['timing/values'] = timer.last
+                    print(f'compute values end in {metrics["timing/values"]:.2f} seconds')
 
+                print('compute advantages start')
                 with Timer(name='adv', logger=None) as timer:
                     # compute scores. Support both model and function-based.
                     # We first compute the scores using reward model. Then, we call reward_fn to combine
@@ -551,9 +567,11 @@ class RayPPOTrainer(object):
                                                   self.config.algorithm.lam,
                                                   adv_estimator=self.config.algorithm.adv_estimator)
                 metrics['timing/adv'] = timer.last
+                print(f'compute advantages end in {metrics["timing/adv"]:.2f} seconds')
 
                 # update critic
                 if self.use_critic:
+                    print('update critic start')
                     with Timer(name='update_critic', logger=None) as timer:
                         # dwn:
                         # critic loss = 0.5 * (values - returns) ** 2 = 0.5 * advantages ** 2
@@ -567,27 +585,32 @@ class RayPPOTrainer(object):
                     metrics['timing/update_critic'] = timer.last
                     critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
                     metrics.update(critic_output_metrics)
+                    print(f'update critic end in {metrics["timing/update_critic"]:.2f} seconds')
 
                 # implement critic warmup
                 # dwn: don't update actor during warmup stage, because critic needs more updates
                 if self.config.trainer.critic_warmup <= global_steps:
                     # update actor
+                    print('update actor start')
                     with Timer(name='update_actor', logger=None) as timer:
                         # dwn:
                         # we use micro-batches to update the actor, during update, we use actor to calculate log_probs (the log_probs produced by the partially updated actor)
                         # then we use importance sampling to calculate clipped objective
-                        actor_output = self.actor_rollout_wg.update_actor(batch, self.group_size)
+                        actor_output = self.actor_rollout_wg.update_actor(batch)
                     metrics['timing/update_actor'] = timer.last
                     actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                     metrics.update(actor_output_metrics)
+                    print(f'update actor end in {metrics["timing/update_actor"]:.2f} seconds')
 
                 # validate
                 if self.val_reward_fn is not None and (global_steps + 1) % self.config.trainer.test_freq == 0:
+                    print('validate start')
                     with Timer(name='testing', logger=None) as timer:
                         val_metrics: dict = self._validate()
                         val_metrics = {f'val/{key}': val for key, val in val_metrics.items()}
                     metrics['timing/testing'] = timer.last
                     metrics.update(val_metrics)
+                    print(f'validate end in {metrics["timing/testing"]:.2f} seconds')
 
                 # collect metrics
                 data_metrics = compute_data_metrics(batch=batch)

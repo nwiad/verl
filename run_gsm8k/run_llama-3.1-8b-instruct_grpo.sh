@@ -5,14 +5,14 @@ MODEL=/mnt/bn/daiweinan-fuse/models/Llama-3.1-8B-Instruct
 GPUS_PER_NODE=8
 ACTOR_MICRO_BS=16
 ROLLOUT_MICRO_BS=16
-ROLLOUT_TP=8
+ROLLOUT_TP=1
 REF_MICRO_BS=16
 CRITIC_MICRO_BS=16
 
-python3 -m verl.trainer.main_ppo \
+python3 -m verl.trainer.main_grpo \
     data.train_files=$WORK_DIR/run_gsm8k/gsm8k_ppo/train.parquet \
     data.val_files=$WORK_DIR/run_gsm8k/gsm8k_ppo/test.parquet \
-    data.train_batch_size=512 \
+    data.train_batch_size=128 \
     data.val_batch_size=1312 \
     data.max_prompt_length=1024 \
     data.max_response_length=512 \
@@ -26,7 +26,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=$ROLLOUT_MICRO_BS \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.75 \
     actor_rollout_ref.ref.log_prob_micro_batch_size=$REF_MICRO_BS \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     critic.optim.lr=1e-5 \
@@ -47,6 +47,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.test_freq=10 \
     trainer.total_epochs=15 \
     algorithm.use_grpo=True \
-    algorithm.group_size=64 \
+    actor_rollout_ref.actor.group_size=16 \
     algorithm.adv_estimator='norm_os' \
     actor_rollout_ref.actor.grpo_kl_coeff=0.04

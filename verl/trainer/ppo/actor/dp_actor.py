@@ -60,7 +60,7 @@ class DataParallelPPOActor(BasePPOActor):
         """Make minibatch iterator for updating the actor
         See PPO paper for details. https://arxiv.org/abs/1707.06347
         """
-        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
+        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages', 'ref_log_prob']
         data = data.select(batch_keys=select_keys)
         return data.make_iterator(mini_batch_size=self.config.ppo_mini_batch_size,
                                   epochs=self.config.ppo_epochs,
@@ -111,7 +111,7 @@ class DataParallelPPOActor(BasePPOActor):
         log_probs = torch.concat(log_probs_lst, dim=0)
         return log_probs
 
-    def update_policy(self, data: DataProto, group_size: int = 1):
+    def update_policy(self, data: DataProto):
         # make sure we are in training mode
         self.actor_module.train()
 
@@ -159,7 +159,7 @@ class DataParallelPPOActor(BasePPOActor):
                                                                    ref_log_prob=ref_log_prob,
                                                                    eos_mask=response_mask)
                     policy_loss += grpo_kl_coeff * grpo_kl_loss
-                    policy_loss /= group_size
+                    policy_loss /= self.config.group_size
 
                 loss = policy_loss / self.gradient_accumulation
                 loss.backward()
