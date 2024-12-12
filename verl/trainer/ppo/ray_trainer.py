@@ -188,16 +188,16 @@ def compute_data_metrics(batch):
             'critic/rewards/max': torch.max(sequence_reward).detach().item(),
             'critic/rewards/min': torch.min(sequence_reward).detach().item(),
         })
-    if 'returns' in batch.batch.keys():
-        returns = batch.batch['returns']
+    if 'values' in batch.batch.keys():
+        values = batch.batch['values']
         metrics.update({
             # values
             'critic/values/mean': masked_mean(values, response_mask).detach().item(),
             'critic/values/max': torch.max(values[response_mask]).detach().item(),
             'critic/values/min': torch.min(values[response_mask]).detach().item(),
         })
-    if 'values' in batch.batch.keys():
-        values = batch.batch['values']
+    if 'returns' in batch.batch.keys():
+        returns = batch.batch['returns']
         metrics.update({
             # returns
             'critic/returns/mean': masked_mean(returns, response_mask).detach().item(),
