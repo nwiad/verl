@@ -1,5 +1,8 @@
 set -x
 
+export HYDRA_FULL_ERROR=1
+export CUDA_LAUNCH_BLOCKING=1
+
 WORK_DIR=/opt/tiger/dwn-verl
 MODEL=/mnt/bn/daiweinan-fuse/models/Llama-3.1-8B-Instruct
 GPUS_PER_NODE=8
@@ -12,7 +15,7 @@ CRITIC_MICRO_BS=16
 python3 -m verl.trainer.main_ppo \
     data.train_files=$WORK_DIR/run_gsm8k/gsm8k_ppo/train.parquet \
     data.val_files=$WORK_DIR/run_gsm8k/gsm8k_ppo/test.parquet \
-    data.train_batch_size=512 \
+    data.train_batch_size=128 \
     data.val_batch_size=1312 \
     data.max_prompt_length=1024 \
     data.max_response_length=512 \

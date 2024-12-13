@@ -1,5 +1,8 @@
 set -x
 
+export HYDRA_FULL_ERROR=1
+export CUDA_LAUNCH_BLOCKING=1
+
 WORK_DIR=/opt/tiger/dwn-verl
 MODEL=/mnt/bn/daiweinan-fuse/models/Llama-3.1-8B-Instruct
 GPUS_PER_NODE=8

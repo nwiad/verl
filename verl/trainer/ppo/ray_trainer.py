@@ -259,19 +259,19 @@ class RayPPOTrainer(object):
             self.kl_ctrl = core_algos.FixedKLController(kl_coef=0.)
 
         # dwn: check consistency for GRPO
-        self.use_grpo = self.config.algorithm.get('use_grpo', False)
-        self.group_size = self.config.actor_rollout_ref.actor.get('group_size', 1)
+        self.use_grpo = self.config.algorithm.use_grpo
+        self.group_size = self.config.actor_rollout_ref.actor.group_size
         print(f'Use GRPO: {self.use_grpo}')
         if self.use_grpo:
             print(f'GRPO Group size: {self.group_size}')
             assert self.group_size > 1, f'Using GRPO, bad group size, got {self.group_size}'
             assert self.config.algorithm.adv_estimator in ['norm_os', 'norm_ps'], f'Using GRPO, bad adv_estimator, got {self.config.algorithm.adv_estimator}'
-            assert self.config.actor_rollout_ref.actor.get('grpo_kl_coeff', 0.0) > 0.0, f'Using GRPO, bad grpo_kl_coeff, got {self.config.actor_rollout_ref.actor.grpo_kl_coeff}'
+            assert self.config.actor_rollout_ref.actor.grpo_kl_coeff > 0.0, f'Using GRPO, bad grpo_kl_coeff, got {self.config.actor_rollout_ref.actor.grpo_kl_coeff}'
             self.config.actor_rollout_ref.actor.ppo_mini_batch_size *= self.group_size
         else:
             assert self.group_size == 1, f'Not using GRPO, bad group size, got {self.group_size}'
             assert self.config.algorithm.adv_estimator == 'gae', f'Not using GRPO, bad adv_estimator, got {self.config.algorithm.adv_estimator}'
-            assert self.config.actor_rollout_ref.actor.get('grpo_kl_coeff', 0.0) == 0.0, f'Not using GRPO, bad grpo_kl_coeff, got {self.config.actor_rollout_ref.actor.get("grpo_kl_coeff", 0.0)}'
+            assert self.config.actor_rollout_ref.actor.grpo_kl_coeff == 0.0, f'Not using GRPO, bad grpo_kl_coeff, got {self.config.actor_rollout_ref.actor.get("grpo_kl_coeff", 0.0)}'
 
         self._create_dataloader(use_grpo=self.use_grpo, group_size=self.group_size)
 
