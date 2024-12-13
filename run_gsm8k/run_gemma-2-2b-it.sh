@@ -40,7 +40,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tracking'] \
     trainer.project_name='verl_example' \
-    trainer.experiment_name='gemma-2-2b-it_function_rm' \
+    trainer.experiment_name='gemma-2-2b-it_gsm8k_ppo' \
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \

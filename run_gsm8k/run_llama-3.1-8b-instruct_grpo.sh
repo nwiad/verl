@@ -43,7 +43,7 @@ python3 -m verl.trainer.main_grpo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tracking'] \
     trainer.project_name='verl_example' \
-    trainer.experiment_name='llama-3.1-8b-instruct_function_rm_grpo' \
+    trainer.experiment_name='llama-3.1-8b-instruct_gsm8k_grpo' \
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
