@@ -13,10 +13,10 @@ REF_MICRO_BS=16
 CRITIC_MICRO_BS=16
 
 python3 -m verl.trainer.main_grpo \
-    data.train_files=$WORK_DIR/run_gsm8k/gsm8k_verl/train.parquet \
-    data.val_files=$WORK_DIR/run_gsm8k/gsm8k_verl/test.parquet \
+    data.train_files=$WORK_DIR/run_openai_math/openai_math_verl/train.parquet \
+    data.val_files=$WORK_DIR/run_openai_math/openai_math_verl/test.parquet \
     data.train_batch_size=128 \
-    data.val_batch_size=1312 \
+    data.val_batch_size=500 \
     data.max_prompt_length=1024 \
     data.max_response_length=512 \
     actor_rollout_ref.model.path=$MODEL \
@@ -43,7 +43,7 @@ python3 -m verl.trainer.main_grpo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tracking'] \
     trainer.project_name='verl_example' \
-    trainer.experiment_name='llama-3.1-8b-instruct_gsm8k_grpo' \
+    trainer.experiment_name='llama-3.1-8b-instruct_math_grpo' \
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \

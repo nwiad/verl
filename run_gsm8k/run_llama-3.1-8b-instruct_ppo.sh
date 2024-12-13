@@ -13,8 +13,8 @@ REF_MICRO_BS=16
 CRITIC_MICRO_BS=16
 
 python3 -m verl.trainer.main_ppo \
-    data.train_files=$WORK_DIR/run_gsm8k/gsm8k_ppo/train.parquet \
-    data.val_files=$WORK_DIR/run_gsm8k/gsm8k_ppo/test.parquet \
+    data.train_files=$WORK_DIR/run_gsm8k/gsm8k_verl/train.parquet \
+    data.val_files=$WORK_DIR/run_gsm8k/gsm8k_verl/test.parquet \
     data.train_batch_size=128 \
     data.val_batch_size=1312 \
     data.max_prompt_length=1024 \

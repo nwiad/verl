@@ -5,7 +5,6 @@ import datasets
 # from verl.utils.hdfs_io import copy, makedirs
 import argparse
 
-# instruction_following = "Let's think step by step and output the final answer after \"####\"."
 QUERY_TEMPLATE = """
 Solve the following math problem step by step. The last line of your response should be of the form Answer: $ANSWER (without quotes) where $ANSWER is the answer to the problem.
 
