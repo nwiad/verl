@@ -21,7 +21,7 @@ dwn: GRPO entrypoint
 
 from verl import DataProto
 import torch
-from verl.utils.reward_score import gsm8k, math
+from verl.utils.reward_score import gsm8k, math, math_evaluator
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 
@@ -30,6 +30,8 @@ def _select_rm_score_fn(data_source):
         return gsm8k.compute_score
     elif data_source == 'lighteval/MATH':
         return math.compute_score
+    elif data_source == 'openai/math':
+        return math_evaluator.compute_score
     else:
         raise NotImplementedError
 

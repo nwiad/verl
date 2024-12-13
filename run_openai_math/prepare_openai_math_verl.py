@@ -53,7 +53,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     num_few_shot = 5
-    data_source = 'lighteval/MATH'
+    data_source = 'openai/math'
 
     dataset = datasets.load_dataset('/mnt/bn/daiweinan-fuse/datasets/prm800k/prm800k/math_splits')
 
