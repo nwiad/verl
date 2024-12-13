@@ -170,10 +170,10 @@ class vLLMRollout(BaseRollout):
             }
 
         # users can customize different sampling_params at different run
-        print(f'batch size = {len(idx_list)}')
+        rank = torch.distributed.get_rank()
         lens = [len(x) for x in idx_list]
         mean_prompt_length = sum(lens) / len(lens)
-        print(f'mean prompt length = {mean_prompt_length:.2f}')
+        print(f'[Rank {rank}] batch size = {len(idx_list)}, mean prompt length = {mean_prompt_length:.2f}')
         with self.update_sampling_params(**kwargs):
             output = self.inference_engine.generate(
                 prompts=None,  # because we have already convert it to prompt token id
