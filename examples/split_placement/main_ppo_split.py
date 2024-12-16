@@ -17,7 +17,7 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 
 from verl import DataProto
 import torch
-from verl.utils.reward_score import gsm8k, math, math_evaluator
+from verl.utils.reward_score import gsm8k, math
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 
@@ -26,8 +26,6 @@ def _select_rm_score_fn(data_source):
         return gsm8k.compute_score
     elif data_source == 'lighteval/MATH':
         return math.compute_score
-    elif data_source == 'openai/math':
-        return math_evaluator.compute_score
     else:
         raise NotImplementedError
 
@@ -88,9 +86,10 @@ class RewardManager():
 
 import ray
 import hydra
+from split_monkey_patch import fit
 
 
-@hydra.main(config_path='config', config_name='ppo_trainer', version_base=None)
+@hydra.main(config_path='config', config_name='ppo_trainer_split', version_base=None)
 def main(config):
     if not ray.is_initialized():
         # this is for local ray cluster
@@ -136,25 +135,30 @@ def main_task(config):
 
     from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
 
-    # dwn: map role to worker class
     role_worker_mapping = {
         Role.ActorRollout: ActorRolloutRefWorker,
         Role.Critic: CriticWorker,
         Role.RefPolicy: ActorRolloutRefWorker
     }
 
-    # dwn:
-    # use global pool as resource pool
-    # specify the layout of global pool
-    # map role to global pool, this mapping will later be used to map role to resource pool
-    global_pool_id = 'global_pool'
-    resource_pool_spec = {
-        global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
-    }
+    # NOTE: initialze two resource pool
+    actor_rollout_ref_pool_id = 'actor_rollout_ref_pool'
+    critic_pool_id = 'critic_pool'
+    if config.trainer.nnodes // 2 == 0 and config.trainer.n_gpus_per_node // 2 > 0:
+        resource_pool_spec = {
+            actor_rollout_ref_pool_id: [config.trainer.n_gpus_per_node // 2] * config.trainer.nnodes,
+            critic_pool_id: [config.trainer.n_gpus_per_node // 2] * config.trainer.nnodes,
+        }
+    else:
+        resource_pool_spec = {
+            actor_rollout_ref_pool_id: [config.trainer.n_gpus_per_node] * (config.trainer.nnodes // 2),
+            critic_pool_id: [config.trainer.n_gpus_per_node] * (config.trainer.nnodes // 2),
+        }
+    print(f'resource_pool_spec: {resource_pool_spec}')
     mapping = {
-        Role.ActorRollout: global_pool_id,
-        Role.Critic: global_pool_id,
-        Role.RefPolicy: global_pool_id,
+        Role.ActorRollout: actor_rollout_ref_pool_id,
+        Role.Critic: critic_pool_id,
+        Role.RefPolicy: actor_rollout_ref_pool_id,
     }
 
     # we should adopt a multi-source reward function here
@@ -171,18 +175,16 @@ def main_task(config):
         else:
             raise NotImplementedError
         role_worker_mapping[Role.RewardModel] = RewardModelWorker
-        mapping[Role.RewardModel] = global_pool_id
+        mapping[Role.RewardModel] = critic_pool_id
 
     reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0)
 
     # Note that we always use function-based RM for validation
     val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
 
-    # dwn:
-    # create resource pool
-    # map role to resource pool
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
+    RayPPOTrainer.fit = fit
     trainer = RayPPOTrainer(config=config,
                             tokenizer=tokenizer,
                             role_worker_mapping=role_worker_mapping,

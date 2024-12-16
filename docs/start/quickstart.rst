@@ -1,5 +1,11 @@
-GSM8K Example
-=============
+.. _quickstart:
+
+==========
+Quickstart: Fintune a LLM using PPO with GSM8K dataset
+==========
+
+Post-train a LLM using GSM8K dataset
+====================
 
 Introduction
 ------------
@@ -51,7 +57,7 @@ Step 2: Download Model
 
 There’re three ways to prepare the model checkpoints for post-training:
 
-- Download the required models from hugging face
+- Download the required models from huggingface
 
 .. code:: bash
 
@@ -113,14 +119,15 @@ answer, 0.1 to incorrect answer and 0 to no answer.
 
 **Training Script**
 
-The training script example for FSDP and Megatron-LM backend are stored in examples/ppo_trainer directory.
+The training script example for FSDP and Megatron-LM backend are stored in 
+`examples/ppo_trainer <https://github.com/volcengine/verl/tree/main/examples/ppo_trainer>`_ directory.
 
 .. code:: bash
 
    cd ../ppo_trainer
    bash run_deepseek7b_llm.sh
 
-The script of run_deepseek7b_llm.sh
+The script of `run_deepseek7b_llm.sh`
 
 .. code:: bash
 
