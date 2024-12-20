@@ -88,32 +88,36 @@ def collate_fn(x: list['DataProtoItem']):
 
 def gracefully_chunk(data: List['DataProto'], chunks: int, dim: int=0) -> List['DataProto']:
     """
-    Chunk a list of DataProto.
     This is a workaround for tensordict.chunk, which use torch.split and sometimes result in
     a shorter result than expected.
-    Here the td.chunk will call tensor.split(8), 8 is the upper rounding of 500/64
-    and result in 62 chunks with length 8 and 1 with length 4, 63 intotal.
 
+    ```
     td = TensorDict({
         "qaq": torch.ones(500, 10)
     }, batch_size=500)
     len(td.chunk(64)) == 63 # True
+    ```
+    
+    td.chunk is implemented by tensor.split(8), 8 is the upper rounding of 500/64
+    500 = 8*62 + 4, therefore there will be 62 chunks of length 8 and 1 chunk of length 4, 63 chunks in total.
 
-    we will reimplement a graceful chunk function so that the length of return value is exactly
-    `chunks`
+    This function will gracefully chunk function so that the length of return value is exactly
+    `chunks` and the difference of length of each chunk is at most 1.
     """
-    split_size = data.batch_size[dim] // chunks
-    split_reminder = data.batch_size[dim] % chunks
-    chunk_dicts = data.split(split_size, dim=dim) # 8,8,8,8,8,4
+    split_size = data.batch_size[dim] // chunks # 7
+    split_reminder = data.batch_size[dim] % chunks # 3
+    chunk_dicts = data.split(split_size, dim=dim) # 500->71*7 + 3
     if split_reminder == 0:
         return chunk_dicts
-    chunk_remiders = TensorDict.cat(chunk_dicts[chunks:]).split(1, dim=dim) # 4->1,1,1,1
-
+    import itertools
+    # Split reminders into chunks of length 1 along the specified dimension,
+    # and then use `itertools.chain` to concatenate them.
+    chunk_remiders = itertools.chain.from_iterable(chunk.split(1, dim=dim) for chunk in chunk_dicts[chunks:]) # 7 * 7 + 3 -> 52*1
     return [
         chunk_dicts[i] if i >= split_reminder else
-        TensorDict.cat([chunk_dicts[i], chunk_remiders[i]], dim=dim)
+        TensorDict.cat([chunk_dicts[i], next(chunk_remiders)], dim=dim)
         for i in range(chunks)
-     ] # 9,9,9,9,8
+     ] # 8 * 52 + 7 * 12, 64 in total
 
 
 
