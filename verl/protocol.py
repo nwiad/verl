@@ -86,6 +86,36 @@ def collate_fn(x: list['DataProtoItem']):
         non_tensor_batch[key] = np.array(val, dtype=object)
     return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
 
+def gracefully_chunk(data: List['DataProto'], chunks: int, dim: int=0) -> List['DataProto']:
+    """
+    Chunk a list of DataProto.
+    This is a workaround for tensordict.chunk, which use torch.split and sometimes result in
+    a shorter result than expected.
+    Here the td.chunk will call tensor.split(8), 8 is the upper rounding of 500/64
+    and result in 62 chunks with length 8 and 1 with length 4, 63 intotal.
+
+    td = TensorDict({
+        "qaq": torch.ones(500, 10)
+    }, batch_size=500)
+    len(td.chunk(64)) == 63 # True
+
+    we will reimplement a graceful chunk function so that the length of return value is exactly
+    `chunks`
+    """
+    split_size = data.batch_size[dim] // chunks
+    split_reminder = data.batch_size[dim] % chunks
+    chunk_dicts = data.split(split_size, dim=dim) # 8,8,8,8,8,4
+    if split_reminder == 0:
+        return chunk_dicts
+    chunk_remiders = TensorDict.cat(chunk_dicts[chunks:]).split(1, dim=dim) # 4->1,1,1,1
+
+    return [
+        chunk_dicts[i] if i >= split_reminder else
+        TensorDict.cat([chunk_dicts[i], chunk_remiders[i]], dim=dim)
+        for i in range(chunks)
+     ] # 9,9,9,9,8
+
+
 
 @dataclass
 class DataProtoItem:
@@ -384,7 +414,8 @@ class DataProto:
             List[DataProto]: a list of DataProto after splitting
         """
         if self.batch is not None:
-            batch_lst = self.batch.chunk(chunks=chunks, dim=0)
+            # batch_lst = self.batch.chunk(chunks=chunks, dim=0)
+            batch_lst = gracefully_chunk(self.batch, chunks=chunks, dim=0)
         else:
             batch_lst = [None for _ in range(chunks)]
 
@@ -469,7 +500,8 @@ class DataProtoFuture:
         for i in range(chunks):
             # note that we can't directly pass i and chunks
             def dispatch_fn(x, i, chunks):
-                return x.chunk(chunks=chunks)[i]
+                # return x.chunk(chunks=chunks)[i]
+                return gracefully_chunk(x, chunks=chunks)[i]
 
             arg_future = DataProtoFuture(collect_fn=self.collect_fn,
                                          dispatch_fn=partial(dispatch_fn, i=i, chunks=chunks),
