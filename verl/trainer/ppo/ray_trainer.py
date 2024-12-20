@@ -465,9 +465,9 @@ class RayPPOTrainer(object):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        # if self.val_reward_fn is not None:
-        #     val_metrics = self._validate()
-        #     pprint(f'Initial validation metrics: {val_metrics}')
+        if self.val_reward_fn is not None:
+            val_metrics = self._validate()
+            pprint(f'Initial validation metrics: {val_metrics}')
 
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
