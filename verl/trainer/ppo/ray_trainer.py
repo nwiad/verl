@@ -152,6 +152,7 @@ def reduce_metrics(metrics: dict):
 
 
 def compute_data_metrics(batch):
+    import wandb
     # TODO: add response length
     sequence_score = batch.batch['token_level_scores'].sum(-1)
 
@@ -169,6 +170,7 @@ def compute_data_metrics(batch):
         'critic/score/mean': torch.mean(sequence_score).detach().item(),
         'critic/score/max': torch.max(sequence_score).detach().item(),
         'critic/score/min': torch.min(sequence_score).detach().item(),
+        'critic/score/hist': wandb.Histogram(sequence_score.detach()),
         # adv
         'critic/advantages/mean': masked_mean(advantages, response_mask).detach().item(),
         'critic/advantages/max': torch.max(advantages[response_mask.bool()]).detach().item(), #### CRITIC!!!
@@ -177,6 +179,7 @@ def compute_data_metrics(batch):
         'response_length/mean': torch.mean(response_length).detach().item(),
         'response_length/max': torch.max(response_length).detach().item(),
         'response_length/min': torch.min(response_length).detach().item(),
+        'response_length/hist': wandb.Histogram(response_length.detach()),
         # prompt length
         'prompt_length/mean': torch.mean(prompt_length).detach().item(),
         'prompt_length/max': torch.max(prompt_length).detach().item(),
