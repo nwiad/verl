@@ -105,10 +105,10 @@ def gracefully_chunk(data: TensorDict, chunks: int, dim: int=0) -> List[TensorDi
     `chunks` and the difference of length of each chunk is at most 1.
     """
     upper_size = -(data.batch_size[dim] // -chunks) # 8
-    reminder = data.batch_size[dim] % chunks # 52
     chunk_dicts = data.split(upper_size, dim=dim) # 500->8 * 62 + 4, but we only need first 52 chunks of length 8
-    if reminder == 0:
+    if len(chunk_dicts) == chunks: # already good enough, return directly to avoid overhead
         return chunk_dicts
+    reminder = data.batch_size[dim] % chunks # 52
     reminder_chunk_dicts = TensorDict.cat(
         chunk_dicts[reminder:], dim=dim
         ).split(upper_size-1, dim=dim) # 10 * 8 + 4 -> 7 * 12
