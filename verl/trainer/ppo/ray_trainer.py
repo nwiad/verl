@@ -605,8 +605,6 @@ class RayPPOTrainer(object):
                     metrics.update(actor_output_metrics)
                     print(f'update actor end in {metrics["timing/update_actor"]:.2f} seconds')
                 
-                breakpoint()
-
                 # validate
                 if self.val_reward_fn is not None and (global_steps + 1) % self.config.trainer.test_freq == 0:
                     print('validate start')
