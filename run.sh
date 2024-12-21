@@ -16,7 +16,7 @@ CRITIC_MICRO_BS=$(( 32 * $NNODES ))
 python3 -m verl.trainer.main_ppo \
     data.train_files=$WORK_DIR/run_openai_math/openai_math_verl/train.parquet \
     data.val_files=$WORK_DIR/run_openai_math/openai_math_verl/test.parquet \
-    data.train_batch_size=1024 \
+    data.train_batch_size=2048 \
     data.val_batch_size=500 \
     data.max_prompt_length=3000 \
     data.max_response_length=12288 \
@@ -45,7 +45,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tracking'] \
     trainer.project_name='verl_example' \
-    trainer.experiment_name=test_fork_${NNODES}nodes/openai_math_ppo_b1k_mb128_warm0 \
+    trainer.experiment_name=test_fork_${NNODES}nodes/openai_math_ppo_b2k_mb256_warm0 \
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=$NNODES \
     trainer.save_freq=10 \
