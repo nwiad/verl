@@ -86,7 +86,7 @@ def collate_fn(x: list['DataProtoItem']):
         non_tensor_batch[key] = np.array(val, dtype=object)
     return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
 
-def gracefully_chunk(data: List['DataProto'], chunks: int, dim: int=0) -> List['DataProto']:
+def gracefully_chunk(data: TensorDict, chunks: int, dim: int=0) -> List[TensorDict]:
     """
     This is a workaround for tensordict.chunk, which use torch.split and sometimes result in
     a shorter result than expected.
