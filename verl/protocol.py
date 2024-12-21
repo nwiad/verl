@@ -104,18 +104,17 @@ def gracefully_chunk(data: TensorDict, chunks: int, dim: int=0) -> List[TensorDi
     This function will gracefully chunk function so that the length of return value is exactly
     `chunks` and the difference of length of each chunk is at most 1.
     """
-    split_size = data.batch_size[dim] // chunks # 7
-    split_reminder = data.batch_size[dim] % chunks # 3
-    chunk_dicts = data.split(split_size, dim=dim) # 500->71*7 + 3
-    if split_reminder == 0:
+    upper_size = -(data.batch_size[dim] // -chunks) # 8
+    reminder = data.batch_size[dim] % chunks # 52
+    chunk_dicts = data.split(upper_size, dim=dim) # 500->8 * 62 + 4, but we only need first 52 chunks of length 8
+    if reminder == 0:
         return chunk_dicts
-    import itertools
-    # Split reminders into chunks of length 1 along the specified dimension,
-    # and then use `itertools.chain` to concatenate them.
-    chunk_remiders = itertools.chain.from_iterable(chunk.split(1, dim=dim) for chunk in chunk_dicts[chunks:]) # 7 * 7 + 3 -> 52*1
+    reminder_chunk_dicts = TensorDict.cat(
+        chunk_dicts[reminder:], dim=dim
+        ).split(upper_size-1, dim=dim) # 10 * 8 + 4 -> 7 * 12
+    assert len(reminder_chunk_dicts) == chunks - reminder, f'{len(reminder_chunk_dicts)=} != {chunks - reminder=}'
     return [
-        chunk_dicts[i] if i >= split_reminder else
-        TensorDict.cat([chunk_dicts[i], next(chunk_remiders)], dim=dim)
+        chunk_dicts[i] if i < reminder else reminder_chunk_dicts[i - reminder]
         for i in range(chunks)
      ] # 8 * 52 + 7 * 12, 64 in total
 

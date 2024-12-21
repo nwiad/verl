@@ -45,11 +45,11 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tracking'] \
     trainer.project_name='verl_example' \
-    trainer.experiment_name=test_fork_${NNODES}nodes/openai_math_ppo_b1k_mb128_warm15 \
+    trainer.experiment_name=test_fork_${NNODES}nodes/openai_math_ppo_b1k_mb128_warm0 \
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=$NNODES \
     trainer.save_freq=10 \
-    trainer.test_freq=10 \
+    trainer.test_freq=5 \
     trainer.total_epochs=100 \
     trainer.default_local_dir='/mnt/bn/honglifish/model/verl/${trainer.project_name}/${trainer.experiment_name}' \
     trainer.default_hdfs_dir='hdfs://haruna/home/byte_data_seed/lf_lq/user/hongli/model/verl/${trainer.project_name}/${trainer.experiment_name}'
