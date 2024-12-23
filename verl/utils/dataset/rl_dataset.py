@@ -103,7 +103,8 @@ class RLHFDataset(Dataset):
                  cache_dir='~/.cache/verl/rlhf',
                  chat_template_func=None,
                  return_raw_chat=False,
-                 truncation='error'):
+                 truncation='error',
+                 epochs=1):
         if not isinstance(parquet_files, (List, ListConfig)):
             parquet_files = [parquet_files]
 
@@ -118,6 +119,7 @@ class RLHFDataset(Dataset):
         self.return_raw_chat = return_raw_chat
         self.chat_template_func = chat_template_func
         self.truncation = truncation
+        self.epochs = epochs
 
         self._download()
         self._read_files_and_tokenize()
@@ -134,6 +136,7 @@ class RLHFDataset(Dataset):
             dataframe = pd.read_parquet(parquet_file)
             dataframes.append(dataframe)
         self.dataframe = pd.concat(dataframes)
+        self._len = len(self.dataframe)
 
         print(f'original dataset len: {len(self.dataframe)}')
 
@@ -147,13 +150,13 @@ class RLHFDataset(Dataset):
         print(f'filter dataset len: {len(self.dataframe)}')
 
     def __len__(self):
-        return len(self.dataframe)
+        return self._len * self.epochs
 
     def __getitem__(self, item):
         """
         Note that we also return the raw_input_ids so that it can be combined with other chat template
         """
-        row_dict = self.dataframe.iloc[item].to_dict()
+        row_dict = self.dataframe.iloc[item % self._len].to_dict()
 
         chat = row_dict.pop(self.prompt_key)
 
