@@ -4,14 +4,14 @@ export HYDRA_FULL_ERROR=1
 export CUDA_LAUNCH_BLOCKING=1
 
 WORK_DIR=/opt/tiger/dwn-verl
-MODEL=/mnt/bn/honglifish/mathmodel/Qwen2.5-32B-Instruct
+MODEL=/mnt/bn/honglifish/model/Qwen2.5-32B-Instruct
 GPUS_PER_NODE=8
-NNODES=8
+NNODES=16
 ACTOR_MICRO_BS=$(( 8 * $NNODES ))
 ROLLOUT_MICRO_BS=$(( 8 * $NNODES ))
-ROLLOUT_TP=1
+ROLLOUT_TP=2
 REF_MICRO_BS=$(( 8 * $NNODES ))
-CRITIC_MICRO_BS=$(( 32 * $NNODES ))
+CRITIC_MICRO_BS=$(( 16 * $NNODES ))
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=$WORK_DIR/run_openai_math/openai_math_verl/train.parquet \
@@ -31,7 +31,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=$ROLLOUT_MICRO_BS \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
     actor_rollout_ref.ref.log_prob_micro_batch_size=$REF_MICRO_BS \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     critic.optim.lr=1e-5 \
@@ -44,12 +44,12 @@ python3 -m verl.trainer.main_ppo \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tracking'] \
-    trainer.project_name='verl_example' \
-    trainer.experiment_name=test_fork_${NNODES}nodes/qwen_openai_math_ppo_b2k_mb256_warm0 \
+    trainer.project_name='verl_fish' \
+    trainer.experiment_name=${NNODES}nodes/qwen32b/math_ppo_b8k_mb1k_warm0\
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=$NNODES \
     trainer.save_freq=10 \
-    trainer.test_freq=5 \
+    trainer.test_freq=10 \
     trainer.total_epochs=100 \
     trainer.default_local_dir='/mnt/bn/honglifish/model/verl/${trainer.project_name}/${trainer.experiment_name}' \
     trainer.default_hdfs_dir='hdfs://haruna/home/byte_data_seed/lf_lq/user/hongli/model/verl/${trainer.project_name}/${trainer.experiment_name}'
