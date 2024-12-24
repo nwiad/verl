@@ -14,7 +14,10 @@
 """
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
+import warnings
 
+# 抑制特定类型的警告
+warnings.simplefilter(action='ignore', category=FutureWarning)
 from verl import DataProto
 import torch
 from verl.utils.reward_score import gsm8k, math, math_evaluator
