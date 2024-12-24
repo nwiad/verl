@@ -163,8 +163,9 @@ def compute_data_metrics(batch):
     response_mask = batch.batch['attention_mask'][:, -response_length:]
 
     prompt_length = prompt_mask.sum(-1).float()
-    response_length = response_mask.sum(-1).float()  # (batch_size,)
-
+    response_length_int = response_mask.sum(-1) # for eos_relative compute
+    response_length = response_length_int.float()  # (batch_size,)
+    
     metrics = {
         # score
         'critic/score/mean': torch.mean(sequence_score).detach().item(),
@@ -175,6 +176,7 @@ def compute_data_metrics(batch):
         'critic/advantages/mean': masked_mean(advantages, response_mask).detach().item(),
         'critic/advantages/max': torch.max(advantages[response_mask.bool()]).detach().item(), #### CRITIC!!!
         'critic/advantages/min': torch.min(advantages[response_mask.bool()]).detach().item(),
+        'critic/advantages/eos_mean': torch.mean(advantages.gather(1, (response_length - 1).long().unsqueeze(1))).detach().item(),
         # response length
         'response_length/mean': torch.mean(response_length).detach().item(),
         'response_length/max': torch.max(response_length).detach().item(),
@@ -469,7 +471,7 @@ class RayPPOTrainer(object):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None:
+        if self.val_reward_fn is not None and self.config.trainer.get('val_before_training', True):
             val_metrics = self._validate()
             pprint(f'Initial validation metrics: {val_metrics}')
 
