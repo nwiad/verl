@@ -7,11 +7,13 @@ WORK_DIR=/opt/tiger/dwn-verl
 MODEL=/mnt/bn/honglifish/model/Qwen2.5-32B-Instruct
 GPUS_PER_NODE=8
 NNODES=16
-ACTOR_MICRO_BS=$(( 8 * $NNODES ))
-ROLLOUT_MICRO_BS=$(( 8 * $NNODES ))
+ACTOR_MICRO_BS=$(( 16 * $NNODES ))
+ROLLOUT_MICRO_BS=$(( 16 * $NNODES ))
 ROLLOUT_TP=2
-REF_MICRO_BS=$(( 8 * $NNODES ))
+REF_MICRO_BS=$(( 16 * $NNODES ))
 CRITIC_MICRO_BS=$(( 16 * $NNODES ))
+
+lr_warmup_steps=20
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=$WORK_DIR/run_openai_math/openai_math_verl/train.parquet \
@@ -23,6 +25,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.path=$MODEL \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
+    +actor_rollout_ref.actor.optim.lr_warmup_steps=${lr_warmup_steps} \
     actor_rollout_ref.actor.ppo_mini_batch_size=1024 \
     actor_rollout_ref.actor.ppo_micro_batch_size=$ACTOR_MICRO_BS \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
@@ -35,6 +38,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.log_prob_micro_batch_size=$REF_MICRO_BS \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     critic.optim.lr=1e-5 \
+    +critic.optim.lr_warmup_steps=${lr_warmup_steps} \
     critic.model.path=$MODEL \
     critic.model.enable_gradient_checkpointing=True \
     critic.ppo_micro_batch_size=$CRITIC_MICRO_BS \
@@ -49,7 +53,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=$NNODES \
     trainer.save_freq=10 \
-    trainer.test_freq=10 \
-    trainer.total_epochs=100 \
+    trainer.test_freq=5 \
+    trainer.total_epochs=120 \
     trainer.default_local_dir='/mnt/bn/honglifish/model/verl/${trainer.project_name}/${trainer.experiment_name}' \
     trainer.default_hdfs_dir='hdfs://haruna/home/byte_data_seed/lf_lq/user/hongli/model/verl/${trainer.project_name}/${trainer.experiment_name}'
