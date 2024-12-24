@@ -176,8 +176,8 @@ def compute_data_metrics(batch):
         'critic/advantages/mean': masked_mean(advantages, response_mask).detach().item(),
         'critic/advantages/max': torch.max(advantages[response_mask.bool()]).detach().item(), #### CRITIC!!!
         'critic/advantages/min': torch.min(advantages[response_mask.bool()]).detach().item(),
-        'critic/advantages/eos_mean': torch.mean(advantages.gather(1, (response_length - 1).long().unsqueeze(1))).detach().item(),
         # response length
+        'response_length/eos_adv': torch.mean(advantages.gather(1, (response_length - 1).long().unsqueeze(1))).detach().item(),
         'response_length/mean': torch.mean(response_length).detach().item(),
         'response_length/max': torch.max(response_length).detach().item(),
         'response_length/min': torch.min(response_length).detach().item(),
