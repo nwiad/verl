@@ -52,7 +52,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name=${NNODES}nodes/qwen32b/math_ppo_b8k_mb1k_warm0\
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=$NNODES \
-    trainer.save_freq=10 \
+    trainer.save_freq=20 \
     trainer.test_freq=5 \
     trainer.total_epochs=120 \
     trainer.default_local_dir='/mnt/bn/honglifish/model/verl/${trainer.project_name}/${trainer.experiment_name}' \
