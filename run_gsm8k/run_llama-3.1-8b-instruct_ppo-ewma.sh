@@ -8,9 +8,10 @@ MODEL=/mnt/bn/daiweinan-fuse/models/Llama-3.1-8B-Instruct
 GPUS_PER_NODE=8
 ACTOR_MICRO_BS=16
 ROLLOUT_MICRO_BS=16
-ROLLOUT_TP=8
+ROLLOUT_TP=1
 REF_MICRO_BS=16
 CRITIC_MICRO_BS=16
+EWMA_MICRO_BS=16
 
 python3 -m verl.trainer.main_ppo_ewma \
     data.train_files=$WORK_DIR/run_gsm8k/gsm8k_verl/train.parquet \
@@ -50,4 +51,6 @@ python3 -m verl.trainer.main_ppo_ewma \
     trainer.test_freq=10 \
     trainer.total_epochs=15 \
     actor_rollout_ref.actor.use_ewma=True \
-    actor_rollout_ref.ewma.decay=0.9
+    actor_rollout_ref.ewma.decay=0.9 \
+    actor_rollout_ref.ewma.log_prob_micro_batch_size=$EWMA_MICRO_BS \
+    actor_rollout_ref.ewma.fsdp_config.param_offload=True

@@ -76,9 +76,11 @@ class ActorRolloutRefWorker(Worker):
             self._is_offload_param = self.config.actor.fsdp_config.get('param_offload', False)
             self._is_offload_grad = self.config.actor.fsdp_config.get('grad_offload', False)
             self._is_offload_optimizer = self.config.actor.fsdp_config.get('optimizer_offload', False)
-        elif self._is_ref or self._is_ewma:
+        elif self._is_ref:
             # TODO: it seems that manual offload is slowly than FSDP offload
             self._is_offload_param = self.config.ref.fsdp_config.get('param_offload', False)
+        elif self._is_ewma:
+            self._is_offload_param = self.config.ewma.fsdp_config.get('param_offload', False)
 
         if self._is_ewma:
             self.ewma_weight = 1.0
@@ -89,8 +91,10 @@ class ActorRolloutRefWorker(Worker):
             self.config.actor.ppo_micro_batch_size //= self.device_mesh.shape[0]
         if self._is_rollout:
             self.config.rollout.log_prob_micro_batch_size //= self.device_mesh.shape[0]
-        if self._is_ref or self._is_ewma:
+        if self._is_ref:
             self.config.ref.log_prob_micro_batch_size //= self.device_mesh.shape[0]
+        if self._is_ewma:
+            self.config.ewma.log_prob_micro_batch_size //= self.device_mesh.shape[0]
 
     def _build_model_optimizer(self,
                                model_path,
