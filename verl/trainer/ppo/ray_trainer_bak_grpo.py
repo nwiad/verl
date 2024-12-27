@@ -46,7 +46,6 @@ class Role(Enum):
     RefPolicy = 4
     RewardModel = 5
     ActorRolloutRef = 6
-    EWMAModel = 7
 
 
 @dataclass
@@ -245,7 +244,6 @@ class RayPPOTrainer(object):
         self.resource_pool_manager = resource_pool_manager
         self.use_reference_policy = Role.RefPolicy in role_worker_mapping
         self.use_rm = Role.RewardModel in role_worker_mapping
-        self.use_ewma = Role.EWMAModel in role_worker_mapping
         self.ray_worker_group_cls = ray_worker_group_cls
 
         # define KL control
@@ -277,14 +275,6 @@ class RayPPOTrainer(object):
             assert self.group_size == 1, f'Not using GRPO, bad group size, got {self.group_size}'
             assert self.config.algorithm.adv_estimator == 'gae', f'Not using GRPO, bad adv_estimator, got {self.config.algorithm.adv_estimator}'
             assert self.config.actor_rollout_ref.actor.grpo_kl_coeff == 0.0, f'Not using GRPO, bad grpo_kl_coeff, got {self.config.actor_rollout_ref.actor.get("grpo_kl_coeff", 0.0)}'
-
-        # dwn: check consistency for PPO-EWMA
-        print(f'Use PPO-EWMA: {self.use_ewma}')
-        if self.use_ewma:
-            assert 0.0 < self.config.actor_rollout_ref.ewma.decay and self.config.actor_rollout_ref.ewma.decay < 1.0, f'Using PPO-EWMA, bad decay, got {self.actor_rollout_ref.ewma.decay}'
-            assert self.config.actor_rollout_ref.actor.use_ewma, f'Using PPO-EWMA, but actor_rollout_ref.actor.use_ewma is False'
-        else:
-            assert not self.config.actor_rollout_ref.actor.use_ewma, f'Not using PPO-EWMA, but actor_rollout_ref.actor.use_ewma is True'
 
         self._create_dataloader(use_grpo=self.use_grpo, group_size=self.group_size)
 
@@ -429,13 +419,6 @@ class RayPPOTrainer(object):
             rm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RewardModel], config=self.config.reward_model)
             self.resource_pool_to_cls[resource_pool]['rm'] = rm_cls
 
-        if self.use_ewma:
-            resource_pool = self.resource_pool_manager.get_resource_pool(Role.EWMAModel)
-            ewma_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.EWMAModel],
-                                            config=self.config.ewma,
-                                            role='ewma')
-            self.resource_pool_to_cls[resource_pool]['ewma'] = ewma_cls
-
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
         # you should not use `create_colocated_worker_cls`. Instead, directly pass different resource pool to different worker groups.
@@ -459,10 +442,6 @@ class RayPPOTrainer(object):
         if self.use_rm:
             self.rm_wg = all_wg['rm']
             self.rm_wg.init_model()
-
-        if self.use_ewma:
-            self.ewma_wg = all_wg['ewma']
-            self.ewma_wg.init_model()
 
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
         self.actor_rollout_wg = all_wg['actor_rollout']
@@ -611,15 +590,6 @@ class RayPPOTrainer(object):
                     metrics.update(critic_output_metrics)
                     print(f'update critic end in {metrics["timing/update_critic"]:.2f} seconds')
 
-                if self.use_ewma:
-                    print('compute ewma log_prob start')
-                    with Timer(name='ewma', logger=None) as timer:
-                        # "ewma_log_prob"
-                        ewma_log_prob = self.ewma_wg.compute_ewma_log_prob(batch)
-                        batch = batch.union(ewma_log_prob)
-                    metrics['timing/ewma'] = timer.last
-                    print(f'compute ewma log_prob end in {metrics["timing/ref"]:.2f} seconds')
-
                 # implement critic warmup
                 # dwn: don't update actor during warmup stage, because critic needs more updates
                 if self.config.trainer.critic_warmup <= global_steps:
@@ -634,13 +604,6 @@ class RayPPOTrainer(object):
                     actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                     metrics.update(actor_output_metrics)
                     print(f'update actor end in {metrics["timing/update_actor"]:.2f} seconds')
-
-                if self.use_ewma:
-                    print('update ewma start')
-                    with Timer(name='update_ewma', logger=None) as timer:
-                        self.ewma_wg.update_ewma(batch, self.actor_rollout_wg)
-                    metrics['timing/update_ewma'] = timer.last
-                    print(f'update ewma end in {metrics["timing/update_ewma"]:.2f} seconds')
 
                 # validate
                 if self.val_reward_fn is not None and (global_steps + 1) % self.config.trainer.test_freq == 0:

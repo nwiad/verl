@@ -56,11 +56,12 @@ class DataParallelPPOActor(BasePPOActor):
             log_probs = logprobs_from_logits(logits, micro_batch['responses'])
             return logits, log_probs
 
-    def _make_minibatch_iterator(self, data: DataProto) -> Iterable[DataProto]:
+    def _make_minibatch_iterator(self, data: DataProto, optional_keys: list) -> Iterable[DataProto]:
         """Make minibatch iterator for updating the actor
         See PPO paper for details. https://arxiv.org/abs/1707.06347
         """
-        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages', 'ref_log_prob']
+        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
+        select_keys.extend(optional_keys)
         data = data.select(batch_keys=select_keys)
         return data.make_iterator(mini_batch_size=self.config.ppo_mini_batch_size,
                                   epochs=self.config.ppo_epochs,
@@ -119,7 +120,12 @@ class DataParallelPPOActor(BasePPOActor):
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
 
-        dataloader = self._make_minibatch_iterator(data=data)
+        optional_keys = []
+        if self.config.grpo_kl_coeff > 0:
+            optional_keys.append('ref_log_prob')
+        elif self.config.use_ewma:
+            optional_keys.append('ewma_log_prob')
+        dataloader = self._make_minibatch_iterator(data=data, optional_keys=optional_keys)
 
         metrics = {}
         for batch_idx, data in enumerate(dataloader):
@@ -141,6 +147,15 @@ class DataParallelPPOActor(BasePPOActor):
                 entropy_coeff = self.config.entropy_coeff
 
                 logits, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+
+                if self.config.use_ewma:
+                    ewma_log_prob = data['ewma_log_prob']
+                    pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=ewma_log_prob,
+                                                                                log_prob=log_prob,
+                                                                                advantages=advantages,
+                                                                                eos_mask=response_mask,
+                                                                                cliprange=clip_ratio)
+                    pg_loss *= ewma_log_prob / old_log_prob
 
                 pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                               log_prob=log_prob,

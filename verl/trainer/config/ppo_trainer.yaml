@@ -19,6 +19,7 @@ actor_rollout_ref:
     enable_gradient_checkpointing: False
   actor:
     strategy: fsdp  # This is for backward-compatibility
+    use_ewma: False
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
     group_size: 1
@@ -48,6 +49,14 @@ actor_rollout_ref:
         # transformer_layer_cls_to_wrap: None
         min_num_params: 0
     log_prob_micro_batch_size: 128
+  ewma:
+    fsdp_config:
+      param_offload: False
+      wrap_policy:
+        # transformer_layer_cls_to_wrap: None
+        min_num_params: 0
+    log_prob_micro_batch_size: 128
+    decay: 0.9
   rollout:
     name: vllm
     temperature: 1.0
