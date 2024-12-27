@@ -13,7 +13,7 @@ REF_MICRO_BS=16
 CRITIC_MICRO_BS=16
 EWMA_MICRO_BS=16
 
-python3 -m verl.trainer.main_ppo_ewma \
+python3 -m verl.trainer.main_ppo \
     data.train_files=$WORK_DIR/run_gsm8k/gsm8k_verl/train.parquet \
     data.val_files=$WORK_DIR/run_gsm8k/gsm8k_verl/test.parquet \
     data.train_batch_size=128 \
@@ -44,13 +44,13 @@ python3 -m verl.trainer.main_ppo_ewma \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tracking'] \
     trainer.project_name='verl_example' \
-    trainer.experiment_name='llama-3.1-8b-instruct_gsm8k_ppo' \
+    trainer.experiment_name='llama-3.1-8b-instruct_gsm8k_ppo_ewma_bs128' \
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=10 \
     trainer.total_epochs=15 \
     actor_rollout_ref.actor.use_ewma=True \
-    actor_rollout_ref.ewma.decay=0.9 \
-    actor_rollout_ref.ewma.log_prob_micro_batch_size=$EWMA_MICRO_BS \
-    actor_rollout_ref.ewma.fsdp_config.param_offload=True
+    actor_rollout_ref.actor.ewma.decay=0.9 \
+    actor_rollout_ref.actor.ewma.log_prob_micro_batch_size=$EWMA_MICRO_BS \
+    actor_rollout_ref.actor.ewma.fsdp_config.param_offload=True

@@ -36,6 +36,7 @@ from verl.utils.import_utils import import_external_libs
 from verl.utils.debug import log_gpu_memory_usage
 import verl.utils.hdfs_io as hdfs_io
 from verl.utils import set_pad_token_id
+import itertools
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv('VERL_PPO_LOGGING_LEVEL', 'WARN'))
@@ -62,16 +63,17 @@ class ActorRolloutRefWorker(Worker):
         self.device_mesh = init_device_mesh('cuda', mesh_shape=(world_size,), mesh_dim_names=['fsdp'])
 
         self.role = role
-        assert self.role in ['actor', 'rollout', 'ref', 'actor_rollout', 'actor_rollout_ref'] or self.role == 'ewma'
+        assert self.role in ['actor', 'rollout', 'ref', 'actor_rollout', 'actor_rollout_ref']
 
         self._is_actor = self.role in ['actor', 'actor_rollout', 'actor_rollout_ref']
         self._is_rollout = self.role in ['rollout', 'actor_rollout', 'actor_rollout_ref']
         self._is_ref = self.role in ['ref', 'actor_rollout_ref']
-        self._is_ewma = self.role == 'ewma'
+        self.use_ewma = self._is_actor and self.config.actor.get('use_ewma', False)
 
         self._is_offload_param = False
         self._is_offload_grad = False
         self._is_offload_optimizer = False
+        self.ewma_is_offload_param = False
         if self._is_actor:
             self._is_offload_param = self.config.actor.fsdp_config.get('param_offload', False)
             self._is_offload_grad = self.config.actor.fsdp_config.get('grad_offload', False)
@@ -79,10 +81,10 @@ class ActorRolloutRefWorker(Worker):
         elif self._is_ref:
             # TODO: it seems that manual offload is slowly than FSDP offload
             self._is_offload_param = self.config.ref.fsdp_config.get('param_offload', False)
-        elif self._is_ewma:
-            self._is_offload_param = self.config.ewma.fsdp_config.get('param_offload', False)
+        if self.use_ewma:
+            self.ewma_is_offload_param = self.config.actor.ewma.fsdp_config.get('param_offload', False)
 
-        if self._is_ewma:
+        if self.use_ewma:
             self.ewma_weight = 1.0
 
         # normalize config
@@ -93,8 +95,8 @@ class ActorRolloutRefWorker(Worker):
             self.config.rollout.log_prob_micro_batch_size //= self.device_mesh.shape[0]
         if self._is_ref:
             self.config.ref.log_prob_micro_batch_size //= self.device_mesh.shape[0]
-        if self._is_ewma:
-            self.config.ewma.log_prob_micro_batch_size //= self.device_mesh.shape[0]
+        if self.use_ewma:
+            self.config.actor.ewma.log_prob_micro_batch_size //= self.device_mesh.shape[0]
 
     def _build_model_optimizer(self,
                                model_path,
@@ -172,7 +174,7 @@ class ActorRolloutRefWorker(Worker):
 
         mixed_precision = MixedPrecision(param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype)
 
-        if self._is_ref or self._is_ewma:
+        if self._is_ref:
             mixed_precision = None
 
         auto_wrap_policy = get_fsdp_wrap_policy(module=actor_module, config=fsdp_config.get('wrap_policy', None))
@@ -189,15 +191,6 @@ class ActorRolloutRefWorker(Worker):
         else:
             sharding_strategy = ShardingStrategy.FULL_SHARD
 
-        # dwn:
-        # EWMA model never calls backward
-        # to make sure modification persists, we should reshard the model after forward
-        # otherwise next time forward is called, the stale unsharded params will be used instead of the modified ones.
-        # FULL_SHARD: all params are unsharded before forward and resharded after forward
-        # SHARD_GRAD_OP: all params are unsharded before forward and resharded after backward
-        # so we must use FULL_SHARD for EWMA model
-        if self._is_ewma: 
-            sharding_strategy = ShardingStrategy.FULL_SHARD
 
         # TODO: add transformer policy
         actor_module_fsdp = FSDP(
@@ -236,6 +229,116 @@ class ActorRolloutRefWorker(Worker):
         log_gpu_memory_usage('After actor optimizer init', logger=logger)
 
         return actor_module_fsdp, actor_optimizer, actor_lr_scheduler, actor_model_config
+    
+    def _build_ewma_model(self,
+                          model_path,
+                          fsdp_config,
+                          override_model_config,
+                          enable_gradient_checkpointing=False,
+                          trust_remote_code=False):
+        from verl.utils.model import print_model_size, update_model_config
+        from verl.utils.torch_dtypes import PrecisionType
+        from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, MixedPrecision
+
+        log_gpu_memory_usage('Before init from HF AutoModel', logger=logger)
+        local_path = copy_local_path_from_hdfs(model_path)
+
+        # note that we have to create model in fp32. Otherwise, the optimizer is in bf16, which is incorrect
+        # TODO(zhangchi.usc1992): 1. support create from random initialized model. 2. Support init with FSDP directly
+        self.tokenizer = AutoTokenizer.from_pretrained(local_path, trust_remote_code=trust_remote_code)
+        set_pad_token_id(self.tokenizer)
+
+        torch_dtype = fsdp_config.get('model_dtype', None)
+        if torch_dtype is None:
+            torch_dtype = torch.float32 if self._is_actor else torch.bfloat16
+        else:
+            torch_dtype = PrecisionType.to_dtype(torch_dtype)
+
+        # override model kwargs
+        actor_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code)
+
+        override_config_kwargs = {
+            'bos_token_id': self.tokenizer.bos_token_id,
+            'eos_token_id': self.tokenizer.eos_token_id,
+            'pad_token_id': self.tokenizer.pad_token_id,
+        }
+        override_config_kwargs.update(override_model_config)
+        update_model_config(actor_model_config, override_config_kwargs=override_config_kwargs)
+        if self.rank == 0:
+            print(f'Model config after override: {actor_model_config}')
+
+        # NOTE(fix me): tie_word_embedding causes meta_tensor init to hang
+        init_context = get_init_weight_context_manager(use_meta_tensor=not actor_model_config.tie_word_embeddings)
+
+        with init_context(), warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            actor_module = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=local_path,
+                                                                torch_dtype=torch_dtype,
+                                                                config=actor_model_config,
+                                                                attn_implementation='flash_attention_2',
+                                                                trust_remote_code=trust_remote_code)
+            # some parameters may not in torch_dtype. TODO(zhangchi.usc1992) remove this after we switch to fsdp2
+            actor_module.to(torch_dtype)
+
+            if enable_gradient_checkpointing:
+                actor_module.gradient_checkpointing_enable()
+        torch.distributed.barrier()
+
+        if self.rank == 0:
+            print_model_size(actor_module)
+
+        log_gpu_memory_usage('After init from HF AutoModel', logger=logger)
+
+        # We wrap FSDP for rollout as well
+        mixed_precision_config = fsdp_config.get('mixed_precision', None)
+        if mixed_precision_config is not None:
+            param_dtype = PrecisionType.to_dtype(mixed_precision_config.get('param_dtype', 'bf16'))
+            reduce_dtype = PrecisionType.to_dtype(mixed_precision_config.get('reduce_dtype', 'fp32'))
+            buffer_dtype = PrecisionType.to_dtype(mixed_precision_config.get('buffer_dtype', 'fp32'))
+        else:
+            param_dtype = torch.bfloat16
+            reduce_dtype = torch.float32
+            buffer_dtype = torch.float32
+
+        mixed_precision = MixedPrecision(param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype)
+
+        mixed_precision = None
+
+        auto_wrap_policy = get_fsdp_wrap_policy(module=actor_module, config=fsdp_config.get('wrap_policy', None))
+
+        if self._is_rollout and self.config.rollout.name == 'hf':
+            # TODO(zhangchi.usc1992, shengguangming) fix me. Current, auto_wrap_policy causes HFRollout to hang in Gemma
+            auto_wrap_policy = None
+
+        print(f'wrap_policy: {auto_wrap_policy}')
+
+        # dwn:
+        # EWMA model never calls backward
+        # to make sure modification persists, we should reshard the model after forward
+        # otherwise next time forward is called, the stale unsharded params will be used instead of the modified ones.
+        # FULL_SHARD: all params are unsharded before forward and resharded after forward
+        # SHARD_GRAD_OP: all params are unsharded before forward and resharded after backward
+        # so we must use FULL_SHARD for EWMA model
+        sharding_strategy = ShardingStrategy.FULL_SHARD
+
+        # TODO: add transformer policy
+        actor_module_fsdp = FSDP(
+            actor_module,
+            param_init_fn=init_fn,
+            use_orig_params=False,
+            auto_wrap_policy=auto_wrap_policy,
+            device_id=torch.cuda.current_device(),
+            sharding_strategy=sharding_strategy,  # zero3
+            mixed_precision=mixed_precision,
+            sync_module_states=True,
+            device_mesh=self.device_mesh)
+
+        log_gpu_memory_usage('After Actor FSDP init', logger=logger)
+
+        log_gpu_memory_usage('After actor optimizer init', logger=logger)
+
+        return actor_module_fsdp, actor_model_config
 
     def _build_rollout(self):
         if self.config.rollout.name == 'hf':
@@ -320,18 +423,40 @@ class ActorRolloutRefWorker(Worker):
             OmegaConf.set_struct(self.config.ref, True)
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
 
-        if self._is_ewma:
-            self.ewma_module_fsdp = self._build_model_optimizer(model_path=self.config.model.path,
-                                                                fsdp_config=self.config.ewma.fsdp_config,
-                                                                optim_config=None,
+        if self.use_ewma:
+            self.ewma_module_fsdp = self._build_ewma_model(model_path=self.config.model.path,
+                                                                fsdp_config=self.config.actor.ewma.fsdp_config,
                                                                 override_model_config=override_model_config,
                                                                 trust_remote_code=self.config.model.get(
                                                                     'trust_remote_code', False))[0]
-            if self._is_offload_param:
-                offload_fsdp_param_and_grad(module=self.ewma_module_fsdp, offload_grad=self._is_offload_grad)
+            if self.ewma_is_offload_param:
+                offload_fsdp_param_and_grad(module=self.ewma_module_fsdp, offload_grad=False)
 
-            OmegaConf.set_struct(self.config.ewma, True)
-            self.ewma_policy = DataParallelPPOActor(config=self.config.ewma, actor_module=self.ewma_module_fsdp)
+            OmegaConf.set_struct(self.config.actor.ewma, True)
+            self.ewma_policy = DataParallelPPOActor(config=self.config.actor.ewma, actor_module=self.ewma_module_fsdp)
+        
+            rank = torch.distributed.get_rank()
+            if rank == 0:
+                print(f'[Rank {rank}] ewma model:', self.ewma_module_fsdp._fsdp_wrapped_module)
+                print(f'[Rank {rank}] FSDP ewma model:', self.ewma_module_fsdp)
+
+                params = zip(self.ewma_module_fsdp._fsdp_wrapped_module.parameters(),
+                                        self.ewma_module_fsdp.parameters())
+                
+                for p1, p2 in params:
+                    assert torch.equal(p1, p2), f'[Rank {rank}] ewma param {p1.size()} and {p2.size()} are not equal'
+                    print(f'[Rank {rank}] ewma param {p1.size()} and {p2.size()} are equal')
+
+                # for p in self.ewma_module_fsdp._fsdp_wrapped_module.parameters():
+                #     print(f'[Rank {rank}] ewma param shape:', p.size())
+
+                # for p in self.ewma_module_fsdp.parameters():
+                #     print(f'[Rank {rank}] FSDP ewma param shape:', p.size())
+
+                # print(f'[Rank {rank}] ewma param shape:', next(self.ewma_module_fsdp._fsdp_wrapped_module.parameters()).size())
+                # print(f'[Rank {rank}] actor param shape:', next(self.actor_module_fsdp._fsdp_wrapped_module.parameters()).size())
+                # print(f'[Rank {rank}] FSDP ewma param shape:', next(self.ewma_module_fsdp.parameters()).size())
+                # print(f'[Rank {rank}] FSDP actor param shape:', next(self.actor_module_fsdp.parameters()).size())
 
         torch.cuda.empty_cache()
 
@@ -438,16 +563,16 @@ class ActorRolloutRefWorker(Worker):
     
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_ewma_log_prob(self, data: DataProto):
-        assert self._is_ewma
+        assert self.use_ewma
 
         data = data.to('cuda')
 
-        if self._is_offload_param:
+        if self.ewma_is_offload_param:
             load_fsdp_param_and_grad(module=self.ewma_module_fsdp,
                                      device_id=torch.cuda.current_device(),
-                                     load_grad=self._is_offload_grad)
+                                     load_grad=False)
 
-        micro_batch_size = self.config.ewma.log_prob_micro_batch_size
+        micro_batch_size = self.config.actor.ewma.log_prob_micro_batch_size
         data.meta_info['micro_batch_size'] = micro_batch_size
         data.meta_info['temperature'] = self.config.rollout.temperature
         output = self.ewma_policy.compute_log_prob(data=data)
@@ -455,15 +580,14 @@ class ActorRolloutRefWorker(Worker):
 
         output = output.to('cpu')
         
-        if self._is_offload_param:
-            offload_fsdp_param_and_grad(module=self.ewma_module_fsdp, offload_grad=self._is_offload_grad)
+        if self.ewma_is_offload_param:
+            offload_fsdp_param_and_grad(module=self.ewma_module_fsdp, offload_grad=False)
         torch.cuda.empty_cache()
         return output
     
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def update_ewma(self, actor):
-        import itertools
-        self.ewma_weight = 1 + self.config.ewma.decay * self.ewma_weight
+    def update_ewma(self):
+        self.ewma_weight = 1 + self.config.actor.ewma.decay * self.ewma_weight
         # from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
         # with FSDP.summon_full_params(self.ewma_module_fsdp, rank0_only=True, offload_to_cpu=True), \
         #         FSDP.summon_full_params(actor.actor_module_fsdp, rank0_only=True, offload_to_cpu=True):
@@ -471,7 +595,7 @@ class ActorRolloutRefWorker(Worker):
             itertools.chain(self.ewma_module_fsdp.parameters(), self.ewma_module_fsdp.buffers())
         )
         actor_param = (
-            itertools.chain(actor.actor_module_fsdp.parameters(), actor.actor_module_fsdp.buffers())
+            itertools.chain(self.actor_module_fsdp.parameters(), self.actor_module_fsdp.buffers())
         )
         for p_averaged, p_model in zip(self_param, actor_param):
             with torch.no_grad():
@@ -480,7 +604,8 @@ class ActorRolloutRefWorker(Worker):
                 #            = p_averaged + (1 - w) * (p_model - p_averaged)
                 #            = torch.lerp(p_averaged, p_model, 1 - w)
                 #            = torch.lerp(p_averaged, p_model, 1 - 1 / self.ewma_weight)
-                p_averaged.copy_(torch.lerp(p_averaged, p_model, 1 - 1 / self.ewma_weight))
+                # print(f'[Rank {rank}] device: {p_averaged.device=}, {p_model.device=}')
+                p_averaged.copy_(torch.lerp(p_averaged.detach(), p_model.detach().to(p_averaged.device), 1 - 1 / self.ewma_weight))
 
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
