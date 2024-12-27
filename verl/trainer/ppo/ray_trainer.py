@@ -432,7 +432,7 @@ class RayPPOTrainer(object):
         if self.use_ewma:
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.EWMAModel)
             ewma_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.EWMAModel],
-                                            config=self.config.ewma,
+                                            config=self.config.actor_rollout_ref,
                                             role='ewma')
             self.resource_pool_to_cls[resource_pool]['ewma'] = ewma_cls
 

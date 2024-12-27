@@ -317,7 +317,7 @@ class ActorRolloutRefWorker(Worker):
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
 
         if self._is_ewma:
-            self.ewma_module_fsdp = self._build_model_optimizer(model_path=self.config.ewma.path,
+            self.ewma_module_fsdp = self._build_model_optimizer(model_path=self.config.model.path,
                                                                 fsdp_config=self.config.ewma.fsdp_config,
                                                                 optim_config=None,
                                                                 override_model_config=override_model_config,
