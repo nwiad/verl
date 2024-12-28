@@ -98,6 +98,10 @@ class ActorRolloutRefWorker(Worker):
         if self.use_ewma:
             self.config.actor.ewma.log_prob_micro_batch_size //= self.device_mesh.shape[0]
 
+        if self.use_ewma:
+            self.eval_in = None
+            self.eval_out_sums = []
+
     def _build_model_optimizer(self,
                                model_path,
                                fsdp_config,
@@ -239,7 +243,7 @@ class ActorRolloutRefWorker(Worker):
         from verl.utils.model import print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
         from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, MixedPrecision
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
 
         log_gpu_memory_usage('Before init from HF AutoModel', logger=logger)
         local_path = copy_local_path_from_hdfs(model_path)
@@ -289,19 +293,6 @@ class ActorRolloutRefWorker(Worker):
             print_model_size(actor_module)
 
         log_gpu_memory_usage('After init from HF AutoModel', logger=logger)
-
-        # We wrap FSDP for rollout as well
-        mixed_precision_config = fsdp_config.get('mixed_precision', None)
-        if mixed_precision_config is not None:
-            param_dtype = PrecisionType.to_dtype(mixed_precision_config.get('param_dtype', 'bf16'))
-            reduce_dtype = PrecisionType.to_dtype(mixed_precision_config.get('reduce_dtype', 'fp32'))
-            buffer_dtype = PrecisionType.to_dtype(mixed_precision_config.get('buffer_dtype', 'fp32'))
-        else:
-            param_dtype = torch.bfloat16
-            reduce_dtype = torch.float32
-            buffer_dtype = torch.float32
-
-        mixed_precision = MixedPrecision(param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype)
 
         mixed_precision = None
 
@@ -425,10 +416,10 @@ class ActorRolloutRefWorker(Worker):
 
         if self.use_ewma:
             self.ewma_module_fsdp = self._build_ewma_model(model_path=self.config.model.path,
-                                                                fsdp_config=self.config.actor.ewma.fsdp_config,
-                                                                override_model_config=override_model_config,
-                                                                trust_remote_code=self.config.model.get(
-                                                                    'trust_remote_code', False))[0]
+                                                           fsdp_config=self.config.actor.ewma.fsdp_config,
+                                                           override_model_config=override_model_config,
+                                                           trust_remote_code=self.config.model.get(
+                                                               'trust_remote_code', False))[0]
             if self.ewma_is_offload_param:
                 offload_fsdp_param_and_grad(module=self.ewma_module_fsdp, offload_grad=False)
 
@@ -565,6 +556,11 @@ class ActorRolloutRefWorker(Worker):
     def compute_ewma_log_prob(self, data: DataProto):
         assert self.use_ewma
 
+        if self.eval_in is None:
+            self.eval_in = data
+            input_ids_sum = self.eval_in.batch['input_ids'].sum().detach().item()
+            print(f'[Rank {self.rank}] {input_ids_sum=}')
+
         data = data.to('cuda')
 
         if self.ewma_is_offload_param:
@@ -587,26 +583,63 @@ class ActorRolloutRefWorker(Worker):
     
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def update_ewma(self):
+        if self._is_offload_param:
+            load_fsdp_param_and_grad(module=self.actor_module_fsdp,
+                                     device_id=torch.cuda.current_device(),
+                                     load_grad=self._is_offload_grad)
+        if self.ewma_is_offload_param:
+            load_fsdp_param_and_grad(module=self.ewma_module_fsdp,
+                                     device_id=torch.cuda.current_device(),
+                                     load_grad=False)
         self.ewma_weight = 1 + self.config.actor.ewma.decay * self.ewma_weight
-        # from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        # with FSDP.summon_full_params(self.ewma_module_fsdp, rank0_only=True, offload_to_cpu=True), \
-        #         FSDP.summon_full_params(actor.actor_module_fsdp, rank0_only=True, offload_to_cpu=True):
-        self_param = (
-            itertools.chain(self.ewma_module_fsdp.parameters(), self.ewma_module_fsdp.buffers())
-        )
-        actor_param = (
-            itertools.chain(self.actor_module_fsdp.parameters(), self.actor_module_fsdp.buffers())
-        )
-        for p_averaged, p_model in zip(self_param, actor_param):
-            with torch.no_grad():
-                # p_averaged = 1 / self.ewma_weight * p_averaged + (1 - 1 / self.ewma_weight) * p_model
-                #            = w * p_averaged + (1 - w) * p_model 
-                #            = p_averaged + (1 - w) * (p_model - p_averaged)
-                #            = torch.lerp(p_averaged, p_model, 1 - w)
-                #            = torch.lerp(p_averaged, p_model, 1 - 1 / self.ewma_weight)
-                # print(f'[Rank {rank}] device: {p_averaged.device=}, {p_model.device=}')
-                p_averaged.copy_(torch.lerp(p_averaged.detach(), p_model.detach().to(p_averaged.device), 1 - 1 / self.ewma_weight))
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+        with FSDP.summon_full_params(self.ewma_module_fsdp, offload_to_cpu=True), \
+            FSDP.summon_full_params(self.actor_module_fsdp, offload_to_cpu=True):
+            self_param = (
+                itertools.chain(self.ewma_module_fsdp.parameters(), self.ewma_module_fsdp.buffers())
+            )
+            actor_param = (
+                itertools.chain(self.actor_module_fsdp.parameters(), self.actor_module_fsdp.buffers())
+            )
+            for p_averaged, p_model in zip(self_param, actor_param):
+                with torch.no_grad():
+                    # p_averaged = 1 / self.ewma_weight * p_averaged + (1 - 1 / self.ewma_weight) * p_model
+                    #            = w * p_averaged + (1 - w) * p_model 
+                    #            = p_averaged + (1 - w) * (p_model - p_averaged)
+                    #            = torch.lerp(p_averaged, p_model, 1 - w)
+                    #            = torch.lerp(p_averaged, p_model, 1 - 1 / self.ewma_weight)
+                    p_averaged.copy_(torch.lerp(p_averaged.detach(), p_model.detach().to(p_averaged.device), 1 - 1 / self.ewma_weight))
+        if self.ewma_is_offload_param:
+            offload_fsdp_param_and_grad(module=self.ewma_module_fsdp, offload_grad=False)
+        if self._is_offload_param:
+            offload_fsdp_param_and_grad(module=self.actor_module_fsdp, offload_grad=self._is_offload_grad)
 
+        print('Check unequal start')
+        data = self.eval_in.to('cuda')
+        if self.ewma_is_offload_param:
+            load_fsdp_param_and_grad(module=self.ewma_module_fsdp,
+                                     device_id=torch.cuda.current_device(),
+                                     load_grad=False)
+
+        micro_batch_size = self.config.actor.ewma.log_prob_micro_batch_size
+        data.meta_info['micro_batch_size'] = micro_batch_size
+        data.meta_info['temperature'] = self.config.rollout.temperature
+        output = self.ewma_policy.compute_log_prob(data=data)
+        output = output.to('cpu')
+        if self.ewma_is_offload_param:
+            offload_fsdp_param_and_grad(module=self.ewma_module_fsdp, offload_grad=False)
+        torch.cuda.empty_cache()
+        
+        self.eval_out_sums.append(output.sum().item())
+        if len(self.eval_out_sums) <= 1:
+            print(f'[Rank {self.rank}] Check unequal skipped')
+            return
+        for i in range(len(self.eval_out_sums) - 1):
+            assert self.eval_out_sums[i] != self.eval_out_sums[i + 1], \
+                f'[Rank {self.rank}] self.eval_out_sums[{i}]={self.eval_out_sums[i]}, self.eval_out_sums[{i + 1}]={self.eval_out_sums[i + 1]}'
+        assert self.eval_out_sums[-1] != self.eval_out_sums[0], \
+            f'[Rank {self.rank}] {self.eval_out_sums[-1]=}, {self.eval_out_sums[0]=}'
+        print(f'[Rank {self.rank}] Check unequal end')
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, local_path, hdfs_path=None):
