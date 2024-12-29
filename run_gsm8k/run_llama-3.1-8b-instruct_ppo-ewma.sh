@@ -51,6 +51,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.test_freq=10 \
     trainer.total_epochs=15 \
     actor_rollout_ref.actor.use_ewma=True \
-    actor_rollout_ref.actor.ewma.decay=0.9 \
+    actor_rollout_ref.actor.ewma.decay=0.889 \
     actor_rollout_ref.actor.ewma.log_prob_micro_batch_size=$EWMA_MICRO_BS \
     actor_rollout_ref.actor.ewma.fsdp_config.param_offload=True

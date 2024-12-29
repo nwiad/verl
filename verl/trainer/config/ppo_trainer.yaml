@@ -27,7 +27,7 @@ actor_rollout_ref:
           # transformer_layer_cls_to_wrap: None
           min_num_params: 0
       log_prob_micro_batch_size: 128
-      decay: 0.9
+      decay: 0.889
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
     group_size: 1
