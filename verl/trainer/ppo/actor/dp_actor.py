@@ -151,19 +151,18 @@ class DataParallelPPOActor(BasePPOActor):
 
                 if self.config.use_ewma:
                     ewma_log_prob = data['ewma_log_prob']
-                    pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=ewma_log_prob,
-                                                                                log_prob=log_prob,
-                                                                                advantages=advantages,
-                                                                                eos_mask=response_mask,
-                                                                                cliprange=clip_ratio)
-                    # pg_loss *= ewma_log_prob / old_log_prob
-                    pg_loss *= verl_F.masked_mean(ewma_log_prob / old_log_prob, mask=response_mask)
-
-                pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
-                                                                              log_prob=log_prob,
-                                                                              advantages=advantages,
-                                                                              eos_mask=response_mask,
-                                                                              cliprange=clip_ratio)
+                    pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_decoupled_policy_loss(ewma_log_prob=ewma_log_prob,
+                                                                                            old_log_prob=old_log_prob,
+                                                                                            log_prob=log_prob,
+                                                                                            advantages=advantages,
+                                                                                            eos_mask=response_mask,
+                                                                                            cliprange=clip_ratio)
+                else:
+                    pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
+                                                                                  log_prob=log_prob,
+                                                                                  advantages=advantages,
+                                                                                  eos_mask=response_mask,
+                                                                                  cliprange=clip_ratio)
 
                 entropy_loss = core_algos.compute_entropy_loss(logits, response_mask)
                 policy_loss = pg_loss - entropy_loss * entropy_coeff
