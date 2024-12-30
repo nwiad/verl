@@ -152,6 +152,7 @@ def reduce_metrics(metrics: dict):
 
 
 def compute_data_metrics(batch):
+    import wandb
     # TODO: add response length
     sequence_score = batch.batch['token_level_scores'].sum(-1)
 
@@ -162,21 +163,25 @@ def compute_data_metrics(batch):
     response_mask = batch.batch['attention_mask'][:, -response_length:]
 
     prompt_length = prompt_mask.sum(-1).float()
-    response_length = response_mask.sum(-1).float()  # (batch_size,)
-
+    response_length_int = response_mask.sum(-1) # for eos_relative compute
+    response_length = response_length_int.float()  # (batch_size,)
+    
     metrics = {
         # score
         'critic/score/mean': torch.mean(sequence_score).detach().item(),
         'critic/score/max': torch.max(sequence_score).detach().item(),
         'critic/score/min': torch.min(sequence_score).detach().item(),
+        'critic/score/hist': wandb.Histogram(sequence_score.detach()),
         # adv
         'critic/advantages/mean': masked_mean(advantages, response_mask).detach().item(),
-        'critic/advantages/max': torch.max(advantages[response_mask]).detach().item(),
-        'critic/advantages/min': torch.min(advantages[response_mask]).detach().item(),
+        'critic/advantages/max': torch.max(advantages[response_mask.bool()]).detach().item(), #### CRITIC!!!
+        'critic/advantages/min': torch.min(advantages[response_mask.bool()]).detach().item(),
         # response length
+        'response_length/eos_adv_mean': torch.mean(advantages.gather(1, (response_length - 1).long().unsqueeze(1))).detach().item(),
         'response_length/mean': torch.mean(response_length).detach().item(),
         'response_length/max': torch.max(response_length).detach().item(),
         'response_length/min': torch.min(response_length).detach().item(),
+        'response_length/hist': wandb.Histogram(response_length.detach()),
         # prompt length
         'prompt_length/mean': torch.mean(prompt_length).detach().item(),
         'prompt_length/max': torch.max(prompt_length).detach().item(),
@@ -196,16 +201,16 @@ def compute_data_metrics(batch):
         metrics.update({
             # values
             'critic/values/mean': masked_mean(values, response_mask).detach().item(),
-            'critic/values/max': torch.max(values[response_mask]).detach().item(),
-            'critic/values/min': torch.min(values[response_mask]).detach().item(),
+            'critic/values/max': torch.max(values[response_mask.bool()]).detach().item(),
+            'critic/values/min': torch.min(values[response_mask.bool()]).detach().item(),
         })
     if 'returns' in batch.batch.keys():
         returns = batch.batch['returns']
         metrics.update({
             # returns
             'critic/returns/mean': masked_mean(returns, response_mask).detach().item(),
-            'critic/returns/max': torch.max(returns[response_mask]).detach().item(),
-            'critic/returns/min': torch.min(returns[response_mask]).detach().item(),
+            'critic/returns/max': torch.max(returns[response_mask.bool()]).detach().item(),
+            'critic/returns/min': torch.min(returns[response_mask.bool()]).detach().item(),
         })
 
     return metrics
@@ -294,10 +299,11 @@ class RayPPOTrainer(object):
                                          max_prompt_length=self.config.data.max_prompt_length,
                                          filter_prompts=True,
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                         truncation='error')
+                                         truncation='error',
+                                         epochs=self.config.trainer.total_epochs)
         self.train_dataloader = DataLoader(dataset=self.train_dataset,
                                            batch_size=self.config.data.train_batch_size,
-                                           shuffle=True,
+                                           shuffle=False,
                                            drop_last=True,
                                            collate_fn=get_grpo_collate_fn(group_size=group_size) if use_grpo else collate_fn) # dwn: during training, we modify collate_fn for GRPO
 
@@ -321,7 +327,7 @@ class RayPPOTrainer(object):
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
-        total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+        total_training_steps = len(self.train_dataloader)
 
         OmegaConf.set_struct(self.config, True)
         with open_dict(self.config):
@@ -472,192 +478,191 @@ class RayPPOTrainer(object):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None:
+        if self.val_reward_fn is not None and self.config.trainer.get('val_before_training', True):
             val_metrics = self._validate()
             pprint(f'Initial validation metrics: {val_metrics}')
 
-        for epoch in range(self.config.trainer.total_epochs):
-            for batch_dict in self.train_dataloader:
-                print(f'[Epoch {epoch}] [Batch {global_steps}]')
-                # dwn: check if v.shape[0] of all k,v is equal to train_batch_size * group_size
-                for k, v in batch_dict.items():
-                    assert v.shape[0] == self.config.data.train_batch_size * self.group_size, f'Bad batch_size for {k}, expected {self.config.data.batch_size=} * {self.group_size=}, got {v.shape[0]}'
-                metrics = {}
+        for batch_dict in self.train_dataloader:
+            print(f'[Step {global_steps}]')
+            # dwn: check if v.shape[0] of all k,v is equal to train_batch_size * group_size
+            for k, v in batch_dict.items():
+                assert v.shape[0] == self.config.data.train_batch_size * self.group_size, f'Bad batch_size for {k}, expected {self.config.data.batch_size=} * {self.group_size=}, got {v.shape[0]}'
+            metrics = {}
 
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
-                # batch = batch.to('cuda')
+            batch: DataProto = DataProto.from_single_dict(batch_dict)
+            # batch = batch.to('cuda')
 
-                # pop those keys for generation
-                gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+            # pop those keys for generation
+            gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
-                # generate a batch
-                print('generation start')
-                with Timer(name='gen', logger=None) as timer:
+            # generate a batch
+            print('generation start')
+            with Timer(name='gen', logger=None) as timer:
+                # dwn:
+                # prompt -> prompt + response
+
+                # in: [input_ids, attention_mask, position_ids] -> out: [prompts, responses, input_ids, attention_mask, position_ids, old_log_probs, ...]
+
+                # out.prompts = in.input_ids
+                # out.responses = rollout's output token ids (not including input token ids)
+                # out.input_ids = in.input_ids + out.responses
+                # out.attention_mask = attention mask of out.input_ids
+                # out.position_ids = position ids of out.input_ids
+                # out.old_log_probs = log prob of out.responses
+
+                # subsequently ref and critic need to compute per-token log prob corresponding to the response
+                # now that input_ids has become prompt + response
+                # to make that happen, we should use the forward method to obtain per-token log prob
+                # in fact, the calculation of old_log_prob is also done via this method
+                gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+            metrics['timing/gen'] = timer.last
+            print(f'generation end in {metrics["timing/gen"]:.2f} seconds')
+
+            batch = batch.union(gen_batch_output)
+
+            if self.use_reference_policy:
+                # compute reference log_prob
+                print('compute reference log_prob start')
+                with Timer(name='ref', logger=None) as timer:
+                    # dwn: "ref_log_prob"
+                    ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
+                    batch = batch.union(ref_log_prob)
+                metrics['timing/ref'] = timer.last
+                print(f'compute reference log_prob end in {metrics["timing/ref"]:.2f} seconds')
+
+            # dwn: only compute values when we use critic
+            if self.use_critic:
+                # compute values
+                print('compute values start')
+                with Timer(name='values', logger=None) as timer:
+                    # dwn: "values", used for gae and clipping vpreds
+                    values = self.critic_wg.compute_values(batch)
+                    batch = batch.union(values)
+                metrics['timing/values'] = timer.last
+                print(f'compute values end in {metrics["timing/values"]:.2f} seconds')
+
+            print('compute advantages start')
+            with Timer(name='adv', logger=None) as timer:
+                # compute scores. Support both model and function-based.
+                # We first compute the scores using reward model. Then, we call reward_fn to combine
+                # the results from reward model and rule-based results.
+                if self.use_rm:
+                    # we first compute reward model score
+                    reward_tensor = self.rm_wg.compute_rm_score(batch)
+                    batch = batch.union(reward_tensor)
+
+                # we combine with rule-based rm
+                reward_tensor = self.reward_fn(batch)
+                batch.batch['token_level_scores'] = reward_tensor
+
+                # compute rewards. apply_kl_penalty if available
+                # dwn: 
+                # use ref_log_prob and old_log_prob to calculate kl penalty, and apply to rewards
+                # critic/kl records the average of kl penalty
+                # only apply kl penalty when we use critic
+                if self.use_critic:
+                    batch, kl_metrics = apply_kl_penalty(batch,
+                                                        kl_ctrl=self.kl_ctrl,
+                                                        kl_penalty=self.config.algorithm.kl_penalty)
+                    metrics.update(kl_metrics)
+
+                # compute advantages, executed on the driver process
+                if self.use_grpo:
                     # dwn:
-                    # prompt -> prompt + response
-
-                    # in: [input_ids, attention_mask, position_ids] -> out: [prompts, responses, input_ids, attention_mask, position_ids, old_log_probs, ...]
-
-                    # out.prompts = in.input_ids
-                    # out.responses = rollout's output token ids (not including input token ids)
-                    # out.input_ids = in.input_ids + out.responses
-                    # out.attention_mask = attention mask of out.input_ids
-                    # out.position_ids = position ids of out.input_ids
-                    # out.old_log_probs = log prob of out.responses
-
-                    # subsequently ref and critic need to compute per-token log prob corresponding to the response
-                    # now that input_ids has become prompt + response
-                    # to make that happen, we should use the forward method to obtain per-token log prob
-                    # in fact, the calculation of old_log_prob is also done via this method
-                    gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
-                metrics['timing/gen'] = timer.last
-                print(f'generation end in {metrics["timing/gen"]:.2f} seconds')
-
-                batch = batch.union(gen_batch_output)
-
-                if self.use_reference_policy:
-                    # compute reference log_prob
-                    print('compute reference log_prob start')
-                    with Timer(name='ref', logger=None) as timer:
-                        # dwn: "ref_log_prob"
-                        ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
-                        batch = batch.union(ref_log_prob)
-                    metrics['timing/ref'] = timer.last
-                    print(f'compute reference log_prob end in {metrics["timing/ref"]:.2f} seconds')
-
-                # dwn: only compute values when we use critic
-                if self.use_critic:
-                    # compute values
-                    print('compute values start')
-                    with Timer(name='values', logger=None) as timer:
-                        # dwn: "values", used for gae and clipping vpreds
-                        values = self.critic_wg.compute_values(batch)
-                        batch = batch.union(values)
-                    metrics['timing/values'] = timer.last
-                    print(f'compute values end in {metrics["timing/values"]:.2f} seconds')
-
-                print('compute advantages start')
-                with Timer(name='adv', logger=None) as timer:
-                    # compute scores. Support both model and function-based.
-                    # We first compute the scores using reward model. Then, we call reward_fn to combine
-                    # the results from reward model and rule-based results.
-                    if self.use_rm:
-                        # we first compute reward model score
-                        reward_tensor = self.rm_wg.compute_rm_score(batch)
-                        batch = batch.union(reward_tensor)
-
-                    # we combine with rule-based rm
-                    reward_tensor = self.reward_fn(batch)
-                    batch.batch['token_level_scores'] = reward_tensor
-
-                    # compute rewards. apply_kl_penalty if available
+                    # if use GRPO, use reward normalization to calculate advantages
+                    batch = compute_advantage(batch,
+                                                adv_estimator=self.config.algorithm.adv_estimator,
+                                                group_size=self.group_size)
+                else:
                     # dwn: 
-                    # use ref_log_prob and old_log_prob to calculate kl penalty, and apply to rewards
-                    # critic/kl records the average of kl penalty
-                    # only apply kl penalty when we use critic
-                    if self.use_critic:
-                        batch, kl_metrics = apply_kl_penalty(batch,
-                                                            kl_ctrl=self.kl_ctrl,
-                                                            kl_penalty=self.config.algorithm.kl_penalty)
-                        metrics.update(kl_metrics)
+                    # if use PPO, use rewards and values to calculate gae
+                    # returns = advantages + values
+                    batch = compute_advantage(batch,
+                                                self.config.algorithm.gamma,
+                                                self.config.algorithm.lam,
+                                                adv_estimator=self.config.algorithm.adv_estimator)
+            metrics['timing/adv'] = timer.last
+            print(f'compute advantages end in {metrics["timing/adv"]:.2f} seconds')
 
-                    # compute advantages, executed on the driver process
-                    if self.use_grpo:
-                        # dwn:
-                        # if use GRPO, use reward normalization to calculate advantages
-                        batch = compute_advantage(batch,
-                                                  adv_estimator=self.config.algorithm.adv_estimator,
-                                                  group_size=self.group_size)
-                    else:
-                        # dwn: 
-                        # if use PPO, use rewards and values to calculate gae
-                        # returns = advantages + values
-                        batch = compute_advantage(batch,
-                                                  self.config.algorithm.gamma,
-                                                  self.config.algorithm.lam,
-                                                  adv_estimator=self.config.algorithm.adv_estimator)
-                metrics['timing/adv'] = timer.last
-                print(f'compute advantages end in {metrics["timing/adv"]:.2f} seconds')
+            # update critic
+            if self.use_critic:
+                print('update critic start')
+                with Timer(name='update_critic', logger=None) as timer:
+                    # dwn:
+                    # critic loss = 0.5 * (values - returns) ** 2 = 0.5 * advantages ** 2
+                    # in practic we calculate critic as follows:
+                    # we use micro-batches to update the critic, during update, we use critic to calculate vpreds (the values produced by the partially updated critic)
+                    # because the critic has changed, we expect vpreds to differ from values
+                    # we use vpreds to calculate critic loss bacause values might to be too outdated
+                    # to prevent critic from varying too much, we clip vpreds to be close to values
+                    # critic loss = 0.5 * max( (vpreds - returns) ** 2, (vpredsclipped - returns) ** 2 )
+                    critic_output = self.critic_wg.update_critic(batch)
+                metrics['timing/update_critic'] = timer.last
+                critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
+                metrics.update(critic_output_metrics)
+                print(f'update critic end in {metrics["timing/update_critic"]:.2f} seconds')
 
-                # update critic
+            if self.use_ewma:
+                print('compute ewma log_prob start')
+                with Timer(name='ewma', logger=None) as timer:
+                    # "ewma_log_prob"
+                    ewma_log_prob = self.actor_rollout_wg.compute_ewma_log_prob(batch)
+                    batch = batch.union(ewma_log_prob)
+                metrics['timing/ewma'] = timer.last
+                print(f'compute ewma log_prob end in {metrics["timing/ref"]:.2f} seconds')
+
+            # implement critic warmup
+            # dwn: don't update actor during warmup stage, because critic needs more updates
+            if self.config.trainer.critic_warmup <= global_steps:
+                # update actor
+                print('update actor start')
+                with Timer(name='update_actor', logger=None) as timer:
+                    # dwn:
+                    # we use micro-batches to update the actor, during update, we use actor to calculate log_probs (the log_probs produced by the partially updated actor)
+                    # then we use importance sampling to calculate clipped objective
+                    actor_output = self.actor_rollout_wg.update_actor(batch)
+                metrics['timing/update_actor'] = timer.last
+                actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
+                metrics.update(actor_output_metrics)
+                print(f'update actor end in {metrics["timing/update_actor"]:.2f} seconds')
+            
+            if self.use_ewma:
+                print('update ewma start')
+                with Timer(name='update_ewma', logger=None) as timer:
+                    self.actor_rollout_wg.update_ewma()
+                metrics['timing/update_ewma'] = timer.last
+                print(f'update ewma end in {metrics["timing/update_ewma"]:.2f} seconds')
+
+            # validate
+            if self.val_reward_fn is not None and (global_steps + 1) % self.config.trainer.test_freq == 0:
+                print('validate start')
+                with Timer(name='testing', logger=None) as timer:
+                    val_metrics: dict = self._validate()
+                    val_metrics = {f'val/{key}': val for key, val in val_metrics.items()}
+                metrics['timing/testing'] = timer.last
+                metrics.update(val_metrics)
+                print(f'validate end in {metrics["timing/testing"]:.2f} seconds')
+
+            # collect metrics
+            data_metrics = compute_data_metrics(batch=batch)
+            metrics.update(data_metrics)
+
+            # TODO: make a canonical logger that supports various backend
+            logger.log(data=metrics, step=global_steps)
+
+            if self.config.trainer.save_freq > 0 and (global_steps + 1) % self.config.trainer.save_freq == 0:
+                actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor',
+                                                f'global_step_{global_steps}')
+                actor_remote_path = os.path.join(self.config.trainer.default_hdfs_dir, 'actor')
+                self.actor_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path)
+
                 if self.use_critic:
-                    print('update critic start')
-                    with Timer(name='update_critic', logger=None) as timer:
-                        # dwn:
-                        # critic loss = 0.5 * (values - returns) ** 2 = 0.5 * advantages ** 2
-                        # in practic we calculate critic as follows:
-                        # we use micro-batches to update the critic, during update, we use critic to calculate vpreds (the values produced by the partially updated critic)
-                        # because the critic has changed, we expect vpreds to differ from values
-                        # we use vpreds to calculate critic loss bacause values might to be too outdated
-                        # to prevent critic from varying too much, we clip vpreds to be close to values
-                        # critic loss = 0.5 * max( (vpreds - returns) ** 2, (vpredsclipped - returns) ** 2 )
-                        critic_output = self.critic_wg.update_critic(batch)
-                    metrics['timing/update_critic'] = timer.last
-                    critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
-                    metrics.update(critic_output_metrics)
-                    print(f'update critic end in {metrics["timing/update_critic"]:.2f} seconds')
+                    critic_local_path = os.path.join(self.config.trainer.default_local_dir, 'critic',
+                                                        f'global_step_{global_steps}')
+                    critic_remote_path = os.path.join(self.config.trainer.default_hdfs_dir, 'critic')
+                    self.critic_wg.save_checkpoint(critic_local_path, critic_remote_path)
 
-                if self.use_ewma:
-                    print('compute ewma log_prob start')
-                    with Timer(name='ewma', logger=None) as timer:
-                        # "ewma_log_prob"
-                        ewma_log_prob = self.actor_rollout_wg.compute_ewma_log_prob(batch)
-                        batch = batch.union(ewma_log_prob)
-                    metrics['timing/ewma'] = timer.last
-                    print(f'compute ewma log_prob end in {metrics["timing/ref"]:.2f} seconds')
-
-                # implement critic warmup
-                # dwn: don't update actor during warmup stage, because critic needs more updates
-                if self.config.trainer.critic_warmup <= global_steps:
-                    # update actor
-                    print('update actor start')
-                    with Timer(name='update_actor', logger=None) as timer:
-                        # dwn:
-                        # we use micro-batches to update the actor, during update, we use actor to calculate log_probs (the log_probs produced by the partially updated actor)
-                        # then we use importance sampling to calculate clipped objective
-                        actor_output = self.actor_rollout_wg.update_actor(batch)
-                    metrics['timing/update_actor'] = timer.last
-                    actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
-                    metrics.update(actor_output_metrics)
-                    print(f'update actor end in {metrics["timing/update_actor"]:.2f} seconds')
-
-                if self.use_ewma:
-                    print('update ewma start')
-                    with Timer(name='update_ewma', logger=None) as timer:
-                        self.actor_rollout_wg.update_ewma()
-                    metrics['timing/update_ewma'] = timer.last
-                    print(f'update ewma end in {metrics["timing/update_ewma"]:.2f} seconds')
-
-                # validate
-                if self.val_reward_fn is not None and (global_steps + 1) % self.config.trainer.test_freq == 0:
-                    print('validate start')
-                    with Timer(name='testing', logger=None) as timer:
-                        val_metrics: dict = self._validate()
-                        val_metrics = {f'val/{key}': val for key, val in val_metrics.items()}
-                    metrics['timing/testing'] = timer.last
-                    metrics.update(val_metrics)
-                    print(f'validate end in {metrics["timing/testing"]:.2f} seconds')
-
-                # collect metrics
-                data_metrics = compute_data_metrics(batch=batch)
-                metrics.update(data_metrics)
-
-                # TODO: make a canonical logger that supports various backend
-                logger.log(data=metrics, step=global_steps)
-
-                if self.config.trainer.save_freq > 0 and (global_steps + 1) % self.config.trainer.save_freq == 0:
-                    actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor',
-                                                    f'global_step_{global_steps}')
-                    actor_remote_path = os.path.join(self.config.trainer.default_hdfs_dir, 'actor')
-                    self.actor_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path)
-
-                    if self.use_critic:
-                        critic_local_path = os.path.join(self.config.trainer.default_local_dir, 'critic',
-                                                         f'global_step_{global_steps}')
-                        critic_remote_path = os.path.join(self.config.trainer.default_hdfs_dir, 'critic')
-                        self.critic_wg.save_checkpoint(critic_local_path, critic_remote_path)
-
-                global_steps += 1
+            global_steps += 1
 
         # perform validation after training
         if self.val_reward_fn is not None:

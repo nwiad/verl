@@ -86,6 +86,39 @@ def collate_fn(x: list['DataProtoItem']):
         non_tensor_batch[key] = np.array(val, dtype=object)
     return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
 
+def gracefully_chunk(data: TensorDict, chunks: int, dim: int=0) -> List[TensorDict]:
+    """
+    This is a workaround for tensordict.chunk, which use torch.split and sometimes result in
+    a shorter result than expected.
+
+    ```
+    td = TensorDict({
+        "qaq": torch.ones(500, 10)
+    }, batch_size=500)
+    len(td.chunk(64)) == 63 # True
+    ```
+    
+    td.chunk is implemented by tensor.split(8), 8 is the upper rounding of 500/64
+    500 = 8*62 + 4, therefore there will be 62 chunks of length 8 and 1 chunk of length 4, 63 chunks in total.
+
+    This function will gracefully chunk function so that the length of return value is exactly
+    `chunks` and the difference of length of each chunk is at most 1.
+    """
+    upper_size = -(data.batch_size[dim] // -chunks) # 8
+    chunk_dicts = data.split(upper_size, dim=dim) # 500->8 * 62 + 4, but we only need first 52 chunks of length 8
+    if len(chunk_dicts) == chunks: # already good enough, return directly to avoid overhead
+        return chunk_dicts
+    reminder = data.batch_size[dim] % chunks # 52
+    reminder_chunk_dicts = TensorDict.cat(
+        chunk_dicts[reminder:], dim=dim
+        ).split(upper_size-1, dim=dim) # 10 * 8 + 4 -> 7 * 12
+    assert len(reminder_chunk_dicts) == chunks - reminder, f'{len(reminder_chunk_dicts)=} != {chunks - reminder=}'
+    return [
+        chunk_dicts[i] if i < reminder else reminder_chunk_dicts[i - reminder]
+        for i in range(chunks)
+     ] # 8 * 52 + 7 * 12, 64 in total
+
+
 
 @dataclass
 class DataProtoItem:
@@ -384,7 +417,8 @@ class DataProto:
             List[DataProto]: a list of DataProto after splitting
         """
         if self.batch is not None:
-            batch_lst = self.batch.chunk(chunks=chunks, dim=0)
+            # batch_lst = self.batch.chunk(chunks=chunks, dim=0)
+            batch_lst = gracefully_chunk(self.batch, chunks=chunks, dim=0)
         else:
             batch_lst = [None for _ in range(chunks)]
 
@@ -469,7 +503,8 @@ class DataProtoFuture:
         for i in range(chunks):
             # note that we can't directly pass i and chunks
             def dispatch_fn(x, i, chunks):
-                return x.chunk(chunks=chunks)[i]
+                # return x.chunk(chunks=chunks)[i]
+                return gracefully_chunk(x, chunks=chunks)[i]
 
             arg_future = DataProtoFuture(collect_fn=self.collect_fn,
                                          dispatch_fn=partial(dispatch_fn, i=i, chunks=chunks),
