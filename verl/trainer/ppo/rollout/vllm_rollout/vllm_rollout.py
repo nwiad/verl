@@ -220,4 +220,6 @@ class vLLMRollout(BaseRollout):
         if self.config.free_cache_engine:
             self.inference_engine.free_cache_engine()
 
+        print(f'[Rank {rank}] rollout done')
+        torch.distributed.barrier()
         return DataProto(batch=batch)
