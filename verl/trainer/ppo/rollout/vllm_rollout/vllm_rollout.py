@@ -174,6 +174,7 @@ class vLLMRollout(BaseRollout):
         lens = [len(x) for x in idx_list]
         mean_prompt_length = sum(lens) / len(lens)
         print(f'[Rank {rank}] batch size = {len(idx_list)}, mean prompt length = {mean_prompt_length:.2f}')
+        torch.distributed.barrier()
         with self.update_sampling_params(**kwargs):
             output = self.inference_engine.generate(
                 prompts=None,  # because we have already convert it to prompt token id
