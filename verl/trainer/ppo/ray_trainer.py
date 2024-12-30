@@ -46,7 +46,6 @@ class Role(Enum):
     RefPolicy = 4
     RewardModel = 5
     ActorRolloutRef = 6
-    EWMAModel = 7
 
 
 @dataclass
