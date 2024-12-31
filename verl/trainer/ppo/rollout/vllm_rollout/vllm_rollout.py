@@ -170,6 +170,7 @@ class vLLMRollout(BaseRollout):
             }
 
         # users can customize different sampling_params at different run
+        torch.distributed.barrier()
         rank = torch.distributed.get_rank()
         lens = [len(x) for x in idx_list]
         mean_prompt_length = sum(lens) / len(lens)
@@ -181,6 +182,9 @@ class vLLMRollout(BaseRollout):
                 sampling_params=self.sampling_params,
                 prompt_token_ids=idx_list,
                 use_tqdm=False)
+        torch.distributed.barrier()
+        print(f'[Rank {rank}] rollout done')
+        torch.distributed.barrier()
 
         response = output[0].to(idx.device)  # (bs, response_length)
         log_probs = output[1].to(idx.device)  # (bs, response_length)
@@ -220,6 +224,4 @@ class vLLMRollout(BaseRollout):
         if self.config.free_cache_engine:
             self.inference_engine.free_cache_engine()
 
-        print(f'[Rank {rank}] rollout done')
-        torch.distributed.barrier()
         return DataProto(batch=batch)
