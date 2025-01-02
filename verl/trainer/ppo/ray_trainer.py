@@ -548,7 +548,7 @@ class RayPPOTrainer(object):
                     ewma_log_prob = self.actor_rollout_wg.compute_ewma_log_prob(batch)
                     batch = batch.union(ewma_log_prob)
                 metrics['timing/ewma'] = timer.last
-                print(f'compute ewma log_prob end in {metrics["timing/ref"]:.2f} seconds')
+                print(f'compute ewma log_prob end in {metrics["timing/ewma"]:.2f} seconds')
 
             # dwn: only compute values when we use critic
             if self.use_critic:
