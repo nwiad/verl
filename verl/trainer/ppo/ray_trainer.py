@@ -92,6 +92,11 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
                                     kl_penalty=kl_penalty)  # (batch_size, response_length)
         kld = kld * response_mask
         beta = kl_ctrl.value
+    elif 'ewma_log_prob' in data.batch.keys():
+        kld = core_algos.kl_penalty(data.batch['old_log_probs'], data.batch['ewma_log_prob'],
+                                    kl_penalty=kl_penalty)  # (batch_size, response_length)
+        kld = kld * response_mask
+        beta = kl_ctrl.value
     else:
         beta = 0
         kld = torch.zeros_like(response_mask, dtype=torch.float32)
@@ -250,9 +255,12 @@ class RayPPOTrainer(object):
         self.use_reference_policy = Role.RefPolicy in role_worker_mapping
         self.use_rm = Role.RewardModel in role_worker_mapping
         self.ray_worker_group_cls = ray_worker_group_cls
+        self.use_grpo = self.config.algorithm.use_grpo
+        self.group_size = self.config.actor_rollout_ref.actor.group_size
+        self.use_ewma = self.config.actor_rollout_ref.actor.get('use_ewma', False)
 
         # define KL control
-        if self.use_reference_policy:
+        if self.use_reference_policy or self.use_ewma:
             # dwn: whether to fix kl coefficient
             if config.algorithm.kl_ctrl.type == 'fixed':
                 self.kl_ctrl = core_algos.FixedKLController(kl_coef=config.algorithm.kl_ctrl.kl_coef)
@@ -266,9 +274,13 @@ class RayPPOTrainer(object):
         else:
             self.kl_ctrl = core_algos.FixedKLController(kl_coef=0.)
 
+        assert not (self.use_grpo and self.use_ewma), 'Enable GRPO and EWMA at the same time is not supported'
+        if self.use_reference_policy and self.use_ewma:
+            print('Using reference policy and EWMA at the same time')
+            print('Disabling reference policy')
+            self.use_reference_policy = False
+
         # dwn: check consistency for GRPO
-        self.use_grpo = self.config.algorithm.use_grpo
-        self.group_size = self.config.actor_rollout_ref.actor.group_size
         print(f'Use GRPO: {self.use_grpo}')
         if self.use_grpo:
             print(f'GRPO Group size: {self.group_size}')
@@ -282,7 +294,6 @@ class RayPPOTrainer(object):
             assert self.config.actor_rollout_ref.actor.grpo_kl_coeff == 0.0, f'Not using GRPO, bad grpo_kl_coeff, got {self.config.actor_rollout_ref.actor.get("grpo_kl_coeff", 0.0)}'
 
         # dwn: check consistency for PPO-EWMA
-        self.use_ewma = self.config.actor_rollout_ref.actor.get('use_ewma', False)
         print(f'Use PPO-EWMA: {self.use_ewma}')
         if self.use_ewma:
             assert 0.0 < self.config.actor_rollout_ref.actor.ewma.decay and self.config.actor_rollout_ref.actor.ewma.decay < 1.0, f'Using PPO-EWMA, bad decay, got {self.actor_rollout_ref.ewma.decay}'
@@ -530,6 +541,15 @@ class RayPPOTrainer(object):
                 metrics['timing/ref'] = timer.last
                 print(f'compute reference log_prob end in {metrics["timing/ref"]:.2f} seconds')
 
+            if self.use_ewma:
+                print('compute ewma log_prob start')
+                with Timer(name='ewma', logger=None) as timer:
+                    # "ewma_log_prob"
+                    ewma_log_prob = self.actor_rollout_wg.compute_ewma_log_prob(batch)
+                    batch = batch.union(ewma_log_prob)
+                metrics['timing/ewma'] = timer.last
+                print(f'compute ewma log_prob end in {metrics["timing/ref"]:.2f} seconds')
+
             # dwn: only compute values when we use critic
             if self.use_critic:
                 # compute values
@@ -601,15 +621,6 @@ class RayPPOTrainer(object):
                 critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
                 metrics.update(critic_output_metrics)
                 print(f'update critic end in {metrics["timing/update_critic"]:.2f} seconds')
-
-            if self.use_ewma:
-                print('compute ewma log_prob start')
-                with Timer(name='ewma', logger=None) as timer:
-                    # "ewma_log_prob"
-                    ewma_log_prob = self.actor_rollout_wg.compute_ewma_log_prob(batch)
-                    batch = batch.union(ewma_log_prob)
-                metrics['timing/ewma'] = timer.last
-                print(f'compute ewma log_prob end in {metrics["timing/ref"]:.2f} seconds')
 
             # implement critic warmup
             # dwn: don't update actor during warmup stage, because critic needs more updates

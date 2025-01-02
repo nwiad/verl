@@ -426,28 +426,16 @@ class ActorRolloutRefWorker(Worker):
             OmegaConf.set_struct(self.config.actor.ewma, True)
             self.ewma_policy = DataParallelPPOActor(config=self.config.actor.ewma, actor_module=self.ewma_module_fsdp)
         
-            rank = torch.distributed.get_rank()
-            if rank == 0:
-                print(f'[Rank {rank}] ewma model:', self.ewma_module_fsdp._fsdp_wrapped_module)
-                print(f'[Rank {rank}] FSDP ewma model:', self.ewma_module_fsdp)
+            # if self.rank == 0:
+            #     print(f'[Rank {self.rank}] ewma model:', self.ewma_module_fsdp._fsdp_wrapped_module)
+            #     print(f'[Rank {self.rank}] FSDP ewma model:', self.ewma_module_fsdp)
 
-                params = zip(self.ewma_module_fsdp._fsdp_wrapped_module.parameters(),
-                                        self.ewma_module_fsdp.parameters())
+            #     params = zip(self.ewma_module_fsdp._fsdp_wrapped_module.parameters(),
+            #                             self.ewma_module_fsdp.parameters())
                 
-                for p1, p2 in params:
-                    assert torch.equal(p1, p2), f'[Rank {rank}] ewma param {p1.size()} and {p2.size()} are not equal'
-                    print(f'[Rank {rank}] ewma param {p1.size()} and {p2.size()} are equal')
-
-                # for p in self.ewma_module_fsdp._fsdp_wrapped_module.parameters():
-                #     print(f'[Rank {rank}] ewma param shape:', p.size())
-
-                # for p in self.ewma_module_fsdp.parameters():
-                #     print(f'[Rank {rank}] FSDP ewma param shape:', p.size())
-
-                # print(f'[Rank {rank}] ewma param shape:', next(self.ewma_module_fsdp._fsdp_wrapped_module.parameters()).size())
-                # print(f'[Rank {rank}] actor param shape:', next(self.actor_module_fsdp._fsdp_wrapped_module.parameters()).size())
-                # print(f'[Rank {rank}] FSDP ewma param shape:', next(self.ewma_module_fsdp.parameters()).size())
-                # print(f'[Rank {rank}] FSDP actor param shape:', next(self.actor_module_fsdp.parameters()).size())
+            #     for p1, p2 in params:
+            #         assert torch.equal(p1, p2), f'[Rank {self.rank}] ewma param {p1.size()} and {p2.size()} are not equal'
+            #         print(f'[Rank {self.rank}] ewma param {p1.size()} and FSDP ewma param {p2.size()} are equal')
 
         torch.cuda.empty_cache()
 
@@ -614,7 +602,7 @@ class ActorRolloutRefWorker(Worker):
         if self._is_offload_param:
             offload_fsdp_param_and_grad(module=self.actor_module_fsdp, offload_grad=self._is_offload_grad)
 
-        print('Check unequal start')
+        print(f'[Rank {self.rank}] Check unequal start')
         data = self.eval_in.to('cuda')
         if self.ewma_is_offload_param:
             load_fsdp_param_and_grad(module=self.ewma_module_fsdp,
