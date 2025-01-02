@@ -136,7 +136,6 @@ class RLHFDataset(Dataset):
             dataframe = pd.read_parquet(parquet_file)
             dataframes.append(dataframe)
         self.dataframe = pd.concat(dataframes)
-        self._len = len(self.dataframe)
 
         print(f'original dataset len: {len(self.dataframe)}')
 
@@ -148,6 +147,7 @@ class RLHFDataset(Dataset):
                                                              axis=1)]
 
         print(f'filter dataset len: {len(self.dataframe)}')
+        self._len = len(self.dataframe)
 
     def __len__(self):
         return self._len * self.epochs
