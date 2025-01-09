@@ -252,6 +252,8 @@ def is_correct_minerva(og_pred, gt, gt_need_extract=False):
     if match:
         extracted_answer = match[-1]
     else:
+        extracted_answer = last_boxed_only_string(og_pred)
+    if extracted_answer is None:
         return False, "[INVALID]"
     pred = normalize_final_answer(extracted_answer)
     if gt_need_extract:
