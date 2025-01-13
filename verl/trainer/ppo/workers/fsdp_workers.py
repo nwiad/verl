@@ -483,7 +483,7 @@ class ActorRolloutRefWorker(Worker):
             },
             batch_size=batch_size)
         output = DataProto(batch=batch)
-        print(f'[{self.rank}] test_generate_sequences: {output.batch}')
+        print(f'[Rank {self.rank}] test_generate_sequences: {output.batch}')
         return output # this is of the same shape with the output of generate_sequences
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
