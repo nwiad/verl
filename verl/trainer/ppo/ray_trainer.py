@@ -490,7 +490,9 @@ class RayPPOTrainer(object):
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_training', True):
-            val_metrics = self._validate()
+            with Timer(name='testing', logger=None) as timer:
+                val_metrics = self._validate()
+            print(f'Initial validation ends in {(timer.last):.2f} seconds')
             pprint(f'Initial validation metrics: {val_metrics}')
 
         for batch_dict in self.train_dataloader:
@@ -507,7 +509,7 @@ class RayPPOTrainer(object):
             gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
             # generate a batch
-            print('generation start')
+            print('Generation starts')
             with Timer(name='gen', logger=None) as timer:
                 # dwn:
                 # prompt -> prompt + response
@@ -527,41 +529,41 @@ class RayPPOTrainer(object):
                 # in fact, the calculation of old_log_prob is also done via this method
                 gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
             metrics['timing/gen'] = timer.last
-            print(f'generation end in {metrics["timing/gen"]:.2f} seconds')
+            print(f'Generation ends in {metrics["timing/gen"]:.2f} seconds')
 
             batch = batch.union(gen_batch_output)
 
             if self.use_reference_policy:
-                # compute reference log_prob
-                print('compute reference log_prob start')
+                # compute reference log prob
+                print('Computing reference log prob starts')
                 with Timer(name='ref', logger=None) as timer:
                     # dwn: "ref_log_prob"
                     ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                     batch = batch.union(ref_log_prob)
                 metrics['timing/ref'] = timer.last
-                print(f'compute reference log_prob end in {metrics["timing/ref"]:.2f} seconds')
+                print(f'Computing reference log prob ends in {metrics["timing/ref"]:.2f} seconds')
 
             if self.use_ewma:
-                print('compute ewma log_prob start')
+                print('Computing EWMA log prob starts')
                 with Timer(name='ewma', logger=None) as timer:
                     # "ewma_log_prob"
                     ewma_log_prob = self.actor_rollout_wg.compute_ewma_log_prob(batch)
                     batch = batch.union(ewma_log_prob)
                 metrics['timing/ewma'] = timer.last
-                print(f'compute ewma log_prob end in {metrics["timing/ewma"]:.2f} seconds')
+                print(f'Computing EWMA log prob ends in {metrics["timing/ewma"]:.2f} seconds')
 
             # dwn: only compute values when we use critic
             if self.use_critic:
                 # compute values
-                print('compute values start')
+                print('Computing values starts')
                 with Timer(name='values', logger=None) as timer:
                     # dwn: "values", used for gae and clipping vpreds
                     values = self.critic_wg.compute_values(batch)
                     batch = batch.union(values)
                 metrics['timing/values'] = timer.last
-                print(f'compute values end in {metrics["timing/values"]:.2f} seconds')
+                print(f'Computing values ends in {metrics["timing/values"]:.2f} seconds')
 
-            print('compute advantages start')
+            print('Computing advantages starts')
             with Timer(name='adv', logger=None) as timer:
                 # compute scores. Support both model and function-based.
                 # We first compute the scores using reward model. Then, we call reward_fn to combine
@@ -602,11 +604,11 @@ class RayPPOTrainer(object):
                                                 self.config.algorithm.lam,
                                                 adv_estimator=self.config.algorithm.adv_estimator)
             metrics['timing/adv'] = timer.last
-            print(f'compute advantages end in {metrics["timing/adv"]:.2f} seconds')
+            print(f'Computing advantages ends in {metrics["timing/adv"]:.2f} seconds')
 
             # update critic
             if self.use_critic:
-                print('update critic start')
+                print('Updating critic starts')
                 with Timer(name='update_critic', logger=None) as timer:
                     # dwn:
                     # critic loss = 0.5 * (values - returns) ** 2 = 0.5 * advantages ** 2
@@ -620,13 +622,13 @@ class RayPPOTrainer(object):
                 metrics['timing/update_critic'] = timer.last
                 critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
                 metrics.update(critic_output_metrics)
-                print(f'update critic end in {metrics["timing/update_critic"]:.2f} seconds')
+                print(f'Updating critic ends in {metrics["timing/update_critic"]:.2f} seconds')
 
             # implement critic warmup
             # dwn: don't update actor during warmup stage, because critic needs more updates
             if self.config.trainer.critic_warmup <= global_steps:
                 # update actor
-                print('update actor start')
+                print('Updating actor starts')
                 with Timer(name='update_actor', logger=None) as timer:
                     # dwn:
                     # we use micro-batches to update the actor, during update, we use actor to calculate log_probs (the log_probs produced by the partially updated actor)
@@ -635,24 +637,24 @@ class RayPPOTrainer(object):
                 metrics['timing/update_actor'] = timer.last
                 actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                 metrics.update(actor_output_metrics)
-                print(f'update actor end in {metrics["timing/update_actor"]:.2f} seconds')
+                print(f'Updating actor ends in {metrics["timing/update_actor"]:.2f} seconds')
             
             if self.use_ewma:
-                print('update ewma start')
+                print('Updating ewma starts')
                 with Timer(name='update_ewma', logger=None) as timer:
                     self.actor_rollout_wg.update_ewma()
                 metrics['timing/update_ewma'] = timer.last
-                print(f'update ewma end in {metrics["timing/update_ewma"]:.2f} seconds')
+                print(f'Updating ewma ends in {metrics["timing/update_ewma"]:.2f} seconds')
 
             # validate
             if self.val_reward_fn is not None and (global_steps + 1) % self.config.trainer.test_freq == 0:
-                print('validate start')
+                print('Validation starts')
                 with Timer(name='testing', logger=None) as timer:
                     val_metrics: dict = self._validate()
                     val_metrics = {f'val/{key}': val for key, val in val_metrics.items()}
                 metrics['timing/testing'] = timer.last
                 metrics.update(val_metrics)
-                print(f'validate end in {metrics["timing/testing"]:.2f} seconds')
+                print(f'Validation ends in {metrics["timing/testing"]:.2f} seconds')
 
             # collect metrics
             data_metrics = compute_data_metrics(batch=batch)

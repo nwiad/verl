@@ -186,7 +186,7 @@ class vLLMRollout(BaseRollout):
                 use_tqdm=False)
         torch.distributed.barrier()
         if rank == 0:
-            print(f'vLLM rollout done')
+            print(f'vLLM rollout ends')
 
         response = output[0].to(idx.device)  # (bs, response_length)
         log_probs = output[1].to(idx.device)  # (bs, response_length)
