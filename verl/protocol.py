@@ -449,14 +449,18 @@ class DataProto:
             DataProto: concatenated DataProto
         """
         batch_lst = []
+        print('label 1')
         for batch in data:
             batch_lst.append(batch.batch)
+        print('label 2')
         if batch_lst[0] is not None:
             new_batch = torch.cat(batch_lst, dim=0)
         else:
             new_batch = None
 
+        print('label 3')
         non_tensor_batch = list_of_dict_to_dict_of_list(list_of_dict=[d.non_tensor_batch for d in data])
+        print('label 4')
         for key, val in non_tensor_batch.items():
             non_tensor_batch[key] = np.concatenate(val, axis=0)
 
