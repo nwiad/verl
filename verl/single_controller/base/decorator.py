@@ -137,10 +137,8 @@ def _concat_data_proto_or_future(output: List):
     o = output[0]
 
     if isinstance(o, DataProto):
-        print('Concat DataProto')
         return DataProto.concat(output)
     elif isinstance(o, ray.ObjectRef):
-        print('Concat DataProtoFuture')
         return DataProtoFuture.concat(output)
     else:
         raise NotImplementedError

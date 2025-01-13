@@ -501,32 +501,14 @@ class ActorRolloutRefWorker(Worker):
                 print(f'Recomputing old log probs ends')
             output.batch['old_log_probs'] = old_log_probs
 
-        if self.rank == 0:
-            print('Copying to CPU starts')
-        torch.distributed.barrier()
         output = output.to('cpu')
-        torch.distributed.barrier()
-        if self.rank == 0:
-            print('Copying to CPU ends')
 
-        if self.rank == 0:
-            print('Offloading starts')
-        torch.distributed.barrier()
         if self._is_offload_param:
             # NOTE(sgm): the grad is already in CPU, only offload param here
             offload_fsdp_param_and_grad(module=self.actor_module_fsdp, offload_grad=self._is_offload_grad)
-        torch.distributed.barrier()
-        if self.rank == 0:
-            print('Offloading ends')
 
-        if self.rank == 0:
-            print('Emptying cache starts')
-        torch.distributed.barrier()
         # clear kv cache
         torch.cuda.empty_cache()
-        torch.distributed.barrier()
-        if self.rank == 0:
-            print('Emptying cache ends')
         log_gpu_memory_usage('After recompute log prob', logger=logger)
         return output
 
