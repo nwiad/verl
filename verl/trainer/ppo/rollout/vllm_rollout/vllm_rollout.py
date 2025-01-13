@@ -176,7 +176,7 @@ class vLLMRollout(BaseRollout):
         rank = torch.distributed.get_rank()
         lens = [len(x) for x in idx_list]
         mean_prompt_length = sum(lens) / len(lens)
-        print(f'[Rank {rank}] vllm attn backend = {vllm_attention_backend}, batch size = {len(idx_list)}, mean prompt length = {mean_prompt_length:.2f}')
+        print(f'[Rank {rank}] vLLM attention backend = {vllm_attention_backend}, batch size = {len(idx_list)}, mean prompt length = {mean_prompt_length:.2f}')
         torch.distributed.barrier()
         with self.update_sampling_params(**kwargs):
             output = self.inference_engine.generate(
@@ -184,6 +184,9 @@ class vLLMRollout(BaseRollout):
                 sampling_params=self.sampling_params,
                 prompt_token_ids=idx_list,
                 use_tqdm=False)
+        torch.distributed.barrier()
+        if rank == 0:
+            print(f'vLLM rollout done')
 
         response = output[0].to(idx.device)  # (bs, response_length)
         log_probs = output[1].to(idx.device)  # (bs, response_length)

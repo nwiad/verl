@@ -425,17 +425,6 @@ class ActorRolloutRefWorker(Worker):
 
             OmegaConf.set_struct(self.config.actor.ewma, True)
             self.ewma_policy = DataParallelPPOActor(config=self.config.actor.ewma, actor_module=self.ewma_module_fsdp)
-        
-            # if self.rank == 0:
-            #     print(f'[Rank {self.rank}] ewma model:', self.ewma_module_fsdp._fsdp_wrapped_module)
-            #     print(f'[Rank {self.rank}] FSDP ewma model:', self.ewma_module_fsdp)
-
-            #     params = zip(self.ewma_module_fsdp._fsdp_wrapped_module.parameters(),
-            #                             self.ewma_module_fsdp.parameters())
-                
-            #     for p1, p2 in params:
-            #         assert torch.equal(p1, p2), f'[Rank {self.rank}] ewma param {p1.size()} and {p2.size()} are not equal'
-            #         print(f'[Rank {self.rank}] ewma param {p1.size()} and FSDP ewma param {p2.size()} are equal')
 
         torch.cuda.empty_cache()
 
@@ -503,7 +492,11 @@ class ActorRolloutRefWorker(Worker):
             # we should always recompute old_log_probs when it is HybridEngine
             output.meta_info['micro_batch_size'] = self.config.rollout.log_prob_micro_batch_size
             output.meta_info['temperature'] = self.config.rollout.temperature
+            print(f'[Rank {self.rank}] recompute old log probs')
+            torch.distributed.barrier()
             old_log_probs = self.actor.compute_log_prob(data=output)
+            print(f'[Rank {self.rank}] recompute old log probs done')
+            torch.distributed.barrier()
             output.batch['old_log_probs'] = old_log_probs
 
         output = output.to('cpu')
