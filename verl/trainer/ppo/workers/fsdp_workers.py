@@ -472,7 +472,7 @@ class ActorRolloutRefWorker(Worker):
         responses = torch.full((batch_size, response_length), self.tokenizer.pad_token_id)
         seq = torch.cat([idx, responses], dim=-1)
         attention_mask = torch.ones_like(seq)
-        position_ids = torch.arange(seq.shape[-1])
+        position_ids = torch.ones_like(seq)
         batch = TensorDict(
             {
                 'prompts': idx,
