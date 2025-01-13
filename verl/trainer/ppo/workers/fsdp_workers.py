@@ -464,6 +464,29 @@ class ActorRolloutRefWorker(Worker):
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def test_generate_sequences(self, prompts: DataProto):
+        from tensordict import TensorDict
+        batch_size = prompts.batch['input_ids'].shape[0]
+        response_length = self.config.rollout.response_length
+        idx = prompts.batch['input_ids']
+        responses = torch.full((batch_size, response_length), self.tokenizer.pad_token_id)
+        seq = torch.cat([idx, responses], dim=-1)
+        attention_mask = torch.ones_like(seq)
+        position_ids = torch.arange(seq.shape[-1])
+        batch = TensorDict(
+            {
+                'prompts': idx,
+                'responses': responses,
+                'input_ids': seq,
+                'attention_mask': attention_mask,
+                'position_ids': position_ids,
+            },
+            batch_size=batch_size)
+        output = DataProto(batch=batch)
+        print(f'[{self.rank}] test_generate_sequences: {output.batch}')
+        return output # this is of the same shape with the output of generate_sequences
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
         prompts = prompts.to('cuda')
         # set to False if it is validation
