@@ -25,6 +25,12 @@ veRL is fast with:
 <!-- <a href=""><b>Slides</b></a> | -->
 </p>
 
+## Adaptation by Weinan Dai
+
+- PPO-EWMA: refer to `run_ppo-ewma.sh`
+
+- GRPO: refer to `run_grpo.sh`
+
 ## News
 
 - [2024/12] The team presented <a href="https://neurips.cc/Expo/Conferences/2024/workshop/100677">Post-training LLMs: From Algorithms to Infrastructure</a> at NeurIPS 2024.
