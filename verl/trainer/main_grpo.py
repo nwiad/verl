@@ -32,6 +32,8 @@ def _select_rm_score_fn(data_source):
         return math.compute_score
     elif data_source == 'openai/math':
         return math_evaluator.compute_score
+    elif data_source == 'deepscaler':
+        return math_evaluator.compute_score
     else:
         raise NotImplementedError
 
