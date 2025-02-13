@@ -171,7 +171,7 @@ def compute_data_metrics(batch):
     response_length_int = response_mask.sum(-1) # for eos_relative compute
     response_length = response_length_int.float()  # (batch_size,)
 
-    response_capped_flags = batch.batch['response_capped_flags'] # dwn: (batch_size,)
+    response_capped_flags = batch.batch['response_capped_flags'].float() # dwn: (batch_size,)
     response_capped_ratio = torch.mean(response_capped_flags).detach().item()
     print(f'response_capped_ratio: {response_capped_ratio}')
     
