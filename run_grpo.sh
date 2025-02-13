@@ -1,31 +1,31 @@
 set -x
 
 WORK_DIR=/opt/tiger/dwn-verl
-MODEL=/mnt/bn/daiweinan-fuse/models/Llama-3.1-8B-Instruct
+MODEL=/mnt/bn/daiweinan-fuse/models/DeepSeek-R1-Distill-Qwen-1.5B
 GPUS_PER_NODE=8
 NNODES=8
 ACTOR_MICRO_BS=$(( 8 * $NNODES ))
-ROLLOUT_MICRO_BS=$(( 16 * $NNODES ))
+ROLLOUT_MICRO_BS=$(( 8 * $NNODES ))
 ROLLOUT_TP=1
-REF_MICRO_BS=$(( 16 * $NNODES ))
+REF_MICRO_BS=$(( 8 * $NNODES ))
 # EWMA_MICRO_BS=$(( 16 * $NNODES ))
-CRITIC_MICRO_BS=$(( 32 * $NNODES ))
-GRPO_GS=4
+CRITIC_MICRO_BS=$(( 8 * $NNODES ))
+GRPO_GS=8
 
 lr_warmup_steps=20
 
 python3 -m verl.trainer.main_ppo \
-    data.train_files=$WORK_DIR/run_openai_math/openai_math_verl/hard60.parquet \
-    data.val_files=$WORK_DIR/run_openai_math/openai_math_verl/test.parquet \
-    data.train_batch_size=8192 \
-    data.val_batch_size=500 \
+    data.train_files=$WORK_DIR/run_deepscaler/train.parquet \
+    data.val_files=$WORK_DIR/run_deepscaler/test_repeat3.parquet \
+    data.train_batch_size=128 \
+    data.val_batch_size=90 \
     data.max_prompt_length=3000 \
     data.max_response_length=8192 \
     actor_rollout_ref.model.path=$MODEL \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     +actor_rollout_ref.actor.optim.lr_warmup_steps=${lr_warmup_steps} \
-    actor_rollout_ref.actor.ppo_mini_batch_size=1024 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=64 \
     actor_rollout_ref.actor.ppo_micro_batch_size=$ACTOR_MICRO_BS \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.grad_offload=True \
@@ -48,15 +48,15 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','tracking'] \
     trainer.project_name='dwn-verl' \
-    trainer.experiment_name=dwn_dev/test_64gpus/llama-3.1-8b-it_hard60_grpo_bs8k_minibs1k_resp8k_gs4 \
+    trainer.experiment_name=64gpus/r1-distill-qwen-1.5b_hard60_grpo_bs128_minibs64_resp8k_gs8 \
     trainer.n_gpus_per_node=$GPUS_PER_NODE \
     trainer.nnodes=$NNODES \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
-    trainer.total_epochs=120 \
+    trainer.total_epochs=30 \
     trainer.default_local_dir='/mnt/bn/daiweinan-fuse/models/${trainer.project_name}/${trainer.experiment_name}' \
     trainer.default_hdfs_dir='hdfs://haruna/home/byte_data_seed/lf_lq/user/daiweinan/models/${trainer.project_name}/${trainer.experiment_name}' \
     algorithm.use_grpo=True \
     actor_rollout_ref.actor.group_size=$GRPO_GS \
     algorithm.adv_estimator='norm_os' \
-    actor_rollout_ref.actor.grpo_kl_coeff=0.04
+    actor_rollout_ref.actor.grpo_kl_coeff=0.001

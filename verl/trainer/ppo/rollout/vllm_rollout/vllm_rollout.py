@@ -190,6 +190,7 @@ class vLLMRollout(BaseRollout):
 
         response = output[0].to(idx.device)  # (bs, response_length)
         log_probs = output[1].to(idx.device)  # (bs, response_length)
+        capped_flags = output[2].to(idx.device)  # (bs, )
 
         if response.shape[1] < self.config.response_length:
             response = pad_sequence_to_length(response, self.config.response_length, self.pad_token_id)
@@ -218,7 +219,8 @@ class vLLMRollout(BaseRollout):
                 'input_ids': seq,  # here input_ids become the whole sentences
                 # 'old_log_probs': log_probs, # we will recompute old log prob with actor
                 'attention_mask': attention_mask,
-                'position_ids': position_ids
+                'position_ids': position_ids,
+                'response_capped_flags': capped_flags,
             },
             batch_size=batch_size)
 

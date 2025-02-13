@@ -170,6 +170,10 @@ def compute_data_metrics(batch):
     prompt_length = prompt_mask.sum(-1).float()
     response_length_int = response_mask.sum(-1) # for eos_relative compute
     response_length = response_length_int.float()  # (batch_size,)
+
+    response_capped_flags = batch.batch['response_capped_flags'] # dwn: (batch_size,)
+    response_capped_ratio = torch.mean(response_capped_flags).detach().item()
+    print(f'response_capped_ratio: {response_capped_ratio}')
     
     metrics = {
         # score
@@ -187,6 +191,7 @@ def compute_data_metrics(batch):
         'response_length/max': torch.max(response_length).detach().item(),
         'response_length/min': torch.min(response_length).detach().item(),
         'response_length/hist': wandb.Histogram(response_length.detach()),
+        'response_length/capped_ratio': response_capped_ratio,
         # prompt length
         'prompt_length/mean': torch.mean(prompt_length).detach().item(),
         'prompt_length/max': torch.max(prompt_length).detach().item(),
