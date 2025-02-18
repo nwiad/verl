@@ -610,12 +610,12 @@ class ActorRolloutRefWorker(Worker):
             )
             for p_averaged, p_model in zip(self_param, actor_param):
                 with torch.no_grad():
-                    # p_averaged = 1 / self.ewma_weight * p_averaged + (1 - 1 / self.ewma_weight) * p_model
-                    #            = w * p_averaged + (1 - w) * p_model 
-                    #            = p_averaged + (1 - w) * (p_model - p_averaged)
-                    #            = torch.lerp(p_averaged, p_model, 1 - w)
-                    #            = torch.lerp(p_averaged, p_model, 1 - 1 / self.ewma_weight)
-                    p_averaged.copy_(torch.lerp(p_averaged.detach(), p_model.detach().to(p_averaged.device), 1 - 1 / self.ewma_weight))
+                    # p_averaged = 1 / self.ewma_weight * p_model + (1 - 1 / self.ewma_weight) * p_averaged
+                    #            = w * p_model + (1 - w) * p_averaged
+                    #            = p_model + (1 - w) * (p_averaged - p_model)
+                    #            = torch.lerp(p_model, p_averaged, 1 - w)
+                    #            = torch.lerp(p_model, p_averaged, 1 - 1 / self.ewma_weight)
+                    p_averaged.copy_(torch.lerp(p_model.detach().to(p_averaged.device), p_averaged.detach(), 1 - 1 / self.ewma_weight))
         if self.ewma_is_offload_param:
             offload_fsdp_param_and_grad(module=self.ewma_module_fsdp, offload_grad=False)
         if self._is_offload_param:
