@@ -174,7 +174,6 @@ class DataParallelPPOActor(BasePPOActor):
                                                                    ref_log_prob=ref_log_prob,
                                                                    eos_mask=response_mask)
                     policy_loss += grpo_kl_coeff * grpo_kl_loss
-                    policy_loss /= self.config.group_size
 
                 loss = policy_loss / self.gradient_accumulation
                 loss.backward()
